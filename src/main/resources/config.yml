@@ -1,0 +1,21 @@
+# Number of items moved "per item type" per redstone pulse (counted as items, not stacks).
+# Example: with 24 dirt + 40 iron, a single cycle pulls 24 dirt OR 32 iron
+# (only one item type is moved per pulse; see README).
+items-per-cycle: 32
+
+# Maximum pipe length (number of glass blocks the BFS will walk) to cap search cost.
+max-pipe-length: 64
+
+# How the item-frame filter compares items:
+#   SIMILAR = exact NBT match (type + custom name + enchantments + meta) -- default
+#   TYPE    = match by type (Material) only, e.g. every diamond is treated as equal
+filter-match: SIMILAR
+
+# Which storage blocks are allowed as source/destination:
+#   all              = every Container (chest, barrel, shulker, hopper, dropper, dispenser, ...)
+#   or provide a list = only the listed materials are allowed, e.g.
+# allowed-containers:
+#   - CHEST
+#   - TRAPPED_CHEST
+#   - BARREL
+allowed-containers: all

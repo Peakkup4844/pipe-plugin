@@ -1,0 +1,19 @@
+# Console / log messages used by PipePlugin.
+# Placeholders written as {name} are replaced at runtime.
+# This file only affects console output; the plugin has no in-game chat messages.
+
+# Logged once when the plugin finishes enabling. {platform} = Folia or Bukkit/Paper.
+plugin-enabled: "Enabled on platform: {platform}"
+
+config:
+  # Warned when allowed-containers lists a material name that does not exist.
+  unknown-container: "allowed-containers: unknown material '{material}' (skipped)"
+
+# Warnings from the item-transfer pipeline. Each is logged with the underlying error.
+transfer:
+  schedule-failed: "Failed to schedule extract task; releasing pipe"
+  extract-task-failed: "Could not run extract task; releasing pipe"
+  extract-phase-failed: "Extract phase failed; releasing pipe"
+  insert-phase-error: "Insert phase error; returning items to source"
+  insert-failed: "Failed inserting into output; will return items to source"
+  return-failed: "Failed returning leftovers to source"

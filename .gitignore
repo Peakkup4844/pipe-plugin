@@ -1,0 +1,20 @@
+# Gradle
+.gradle/
+build/
+
+# Keep the wrapper jar tracked so the repo builds out of the box
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+Thumbs.db
