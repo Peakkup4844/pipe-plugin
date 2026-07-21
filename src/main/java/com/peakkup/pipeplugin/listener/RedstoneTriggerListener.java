@@ -3,6 +3,7 @@ package com.peakkup.pipeplugin.listener;
 import com.peakkup.pipeplugin.ItemTransferService;
 import com.peakkup.pipeplugin.NetworkDiscovery;
 import com.peakkup.pipeplugin.NetworkRegistry;
+import com.peakkup.pipeplugin.PipeConfig;
 import com.peakkup.pipeplugin.PipeNetwork;
 import com.tcoded.folialib.FoliaLib;
 import org.bukkit.Location;
@@ -32,18 +33,23 @@ public final class RedstoneTriggerListener implements Listener {
     private final NetworkRegistry registry;
     private final NetworkDiscovery discovery;
     private final ItemTransferService transferService;
+    private final PipeConfig config;
 
     /** สถานะ powered ล่าสุดของ sticky piston แต่ละตัว เพื่อจับขอบขาขึ้น */
     private final Map<Location, Boolean> poweredState = new ConcurrentHashMap<>();
+    /** เวลา (ms) ที่ท่อยิงรอบล่าสุด — ใช้บังคับ min-pulse-interval */
+    private final Map<Location, Long> lastFire = new ConcurrentHashMap<>();
 
     public RedstoneTriggerListener(FoliaLib foliaLib,
                                    NetworkRegistry registry,
                                    NetworkDiscovery discovery,
-                                   ItemTransferService transferService) {
+                                   ItemTransferService transferService,
+                                   PipeConfig config) {
         this.foliaLib = foliaLib;
         this.registry = registry;
         this.discovery = discovery;
         this.transferService = transferService;
+        this.config = config;
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -83,6 +89,7 @@ public final class RedstoneTriggerListener implements Listener {
         Block piston = loc.getBlock();
         if (piston.getType() != Material.STICKY_PISTON) {
             poweredState.remove(loc);
+            lastFire.remove(loc);
             return;
         }
 
@@ -92,6 +99,17 @@ public final class RedstoneTriggerListener implements Listener {
 
         if (!powered || was) {
             return; // ไม่ใช่ขอบขาขึ้น
+        }
+
+        // rate limit: กัน clock เร็ว ๆ ยิงรัว (นับต่อท่อ ต่อ input piston)
+        long interval = config.minPulseIntervalMillis();
+        if (interval > 0) {
+            long now = System.currentTimeMillis();
+            Long last = lastFire.get(loc);
+            if (last != null && now - last < interval) {
+                return;
+            }
+            lastFire.put(loc, now);
         }
 
         // ขอบขาขึ้น -> หา/ตรวจท่อ แล้วย้ายของ 1 รอบ

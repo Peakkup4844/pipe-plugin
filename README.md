@@ -69,6 +69,14 @@ items-per-cycle: 32
 # Max tube length the search will follow (caps the pathfinding cost).
 max-pipe-length: 64
 
+# Minimum ticks between two transfers on the SAME pipe (per-pipe rate limit).
+# 20 ticks = 1 second. Stops a fast redstone clock from firing hundreds of cycles.
+# 0 disables the limit.
+min-pulse-interval-ticks: 2
+
+# Play a sound + particles at the source and destination when items move.
+effects: true
+
 # Item-frame filter matching mode:
 #   SIMILAR = exact NBT (type + custom name + enchants + meta)  [default]
 #   TYPE    = material only (all diamonds count as the same)
@@ -109,15 +117,15 @@ Output: `build/libs/PipePlugin-1.0.0.jar`
 
 ## Item-frame filters
 
-Place an **item frame** on the boundary between any two pipe parts and put an item in it. That frame becomes a **gate**: an item may cross that boundary only if it matches the framed item. No frame = everything passes.
+Place an **item frame on any pipe block** — a glass block, the input piston, or an output piston — and put an item in it. That block becomes a **gate**: an item may pass through / into that block only if it matches the framed item. A block with no frame lets everything through.
 
-| Frame location | Effect |
+| Frame is on… | Effect |
 |---|---|
-| Input piston ↔ tube | Only matching items are **pulled** from the source |
-| Tube ↔ tube | Items that don't match **can't pass beyond** that point |
-| Tube ↔ output piston | That output **won't accept** non-matching items |
+| Input piston | Only matching items are **pulled** from the source |
+| A glass block | Items must match to **pass through** that block (use it to block a branch) |
+| Output piston | That output **only accepts** matching items |
 
-- Multiple frames on the same boundary → matching **any** of them lets the item pass (union).
+- Multiple frames on the same block → matching **any** of them lets the item pass (union).
 - Matching is **NBT-exact by default** (`SIMILAR`): a renamed item only matches the exact renamed item. Switch to `TYPE` in config for material-only matching.
 - Frames are read live every pulse, so changing/removing a frame takes effect immediately.
 
@@ -138,7 +146,9 @@ Each pulse moves a single item type; that type is routed as follows:
 - Source empty → nothing moves. Destination full → only what fits is moved; the rest stays in the source (items are never lost).
 - Pipes are auto-discovered on activation and cached; breaking/changing any block in the pipe re-validates it on the next pulse.
 - Triggering relies on `BlockRedstoneEvent` rising-edge detection at the sticky piston. Standard redstone inputs (lever, button, repeater adjacent to the piston) work as expected.
-- On Folia, item insertion happens on each output region's own thread, so outputs in different regions are handled safely. The pipe **topology/filter scan** runs on the input's region, so for guaranteed correctness keep a single pipe network within one region (the normal case for a connected build).
+- A per-pipe rate limit (`min-pulse-interval-ticks`) keeps a fast redstone clock from firing hundreds of cycles a second. A cycle also never overlaps itself — a new pulse is ignored while the previous transfer is still running.
+- A successful move plays a sound + particles at both ends (toggle with `effects`), so a working-but-empty pipe is distinguishable from a broken one.
+- On Folia, item insertion happens on each output region's own thread, and the **item-frame scan runs per region** (one task per chunk it touches), so a pipe that crosses region boundaries still reads filters and moves items correctly.
 
 ---
 

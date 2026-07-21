@@ -34,7 +34,7 @@ public final class PipePlugin extends JavaPlugin {
         ItemTransferService transferService = new ItemTransferService(foliaLib, pipeConfig, router, lang);
 
         getServer().getPluginManager().registerEvents(
-                new RedstoneTriggerListener(foliaLib, registry, discovery, transferService), this);
+                new RedstoneTriggerListener(foliaLib, registry, discovery, transferService, pipeConfig), this);
         getServer().getPluginManager().registerEvents(
                 new PistonGuardListener(registry), this);
         getServer().getPluginManager().registerEvents(

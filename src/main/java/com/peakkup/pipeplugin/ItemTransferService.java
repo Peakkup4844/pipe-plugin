@@ -3,6 +3,9 @@ package com.peakkup.pipeplugin;
 import com.tcoded.folialib.FoliaLib;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
+import org.bukkit.Sound;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
@@ -59,18 +62,30 @@ public final class ItemTransferService {
             return;
         }
         // การ acquire สำเร็จแล้ว: ต่อจากนี้ "ทุก" ทางออกต้อง release ไม่งั้นท่อค้างถาวร
-        //  - เส้นทางปกติ: extractAndDistribute -> distribute -> whenComplete(release)
-        //  - แต่ถ้า schedule ไม่ติด (throw ทันที) หรือ task ไม่เคยถูกรัน (future จบแบบ exception)
-        //    ต้อง release ที่นี่ ไม่งั้น busy จะค้าง true ตลอดกาล
+        //  1) สแกน item frame แบบ region-safe ก่อน (buildAsync) -> ได้ FrameIndex
+        //  2) extract บน region ต้นทาง -> distribute -> whenComplete(release)
+        // ทุก path ที่พัง (schedule ไม่ติด / future จบแบบ exception) ต้อง release
         try {
-            foliaLib.getScheduler()
-                    .runAtLocation(net.sourceContainer(), t -> extractAndDistribute(net))
-                    .exceptionally(e -> {
-                        // task body ไม่เคยรันสำเร็จ (extractAndDistribute จัดการ release เองไม่ได้)
-                        net.release();
-                        LOG.log(Level.WARNING, lang.msg("transfer.extract-task-failed"), e);
-                        return null;
-                    });
+            FrameIndex.buildAsync(foliaLib, net, lang).whenComplete((frames, err) -> {
+                if (err != null || frames == null) {
+                    net.release();
+                    LOG.log(Level.WARNING, lang.msg("transfer.frame-scan-failed"), err);
+                    return;
+                }
+                try {
+                    foliaLib.getScheduler()
+                            .runAtLocation(net.sourceContainer(), t -> extractAndDistribute(net, frames))
+                            .exceptionally(e -> {
+                                // task body ไม่เคยรันสำเร็จ (extractAndDistribute จัดการ release เองไม่ได้)
+                                net.release();
+                                LOG.log(Level.WARNING, lang.msg("transfer.extract-task-failed"), e);
+                                return null;
+                            });
+                } catch (RuntimeException | Error e) {
+                    net.release();
+                    LOG.log(Level.WARNING, lang.msg("transfer.schedule-failed"), e);
+                }
+            });
         } catch (RuntimeException | Error e) {
             net.release();
             LOG.log(Level.WARNING, lang.msg("transfer.schedule-failed"), e);
@@ -78,13 +93,13 @@ public final class ItemTransferService {
     }
 
     // --- เฟส 1: ดูดของ + เตรียมเส้นทาง (บน region ต้นทาง) ---
-    private void extractAndDistribute(PipeNetwork net) {
+    private void extractAndDistribute(PipeNetwork net, FrameIndex frames) {
         List<TypeJob> jobs;
         try {
-            jobs = extract(net);
+            jobs = extract(net, frames);
         } catch (RuntimeException | Error e) {
-            // อะไรก็ตามที่พังในเฟสดูด (เช่น world unload, getNearbyEntities ข้าม region บน Folia)
-            // ต้องปลด busy ไม่งั้นท่อจะค้างถาวร (ของยังอยู่ต้นทาง = ไม่หาย)
+            // อะไรก็ตามที่พังในเฟสดูด (เช่น world unload) ต้องปลด busy
+            // ไม่งั้นท่อจะค้างถาวร (ของยังอยู่ต้นทาง = ไม่หาย)
             net.release();
             LOG.log(Level.WARNING, lang.msg("transfer.extract-phase-failed"), e);
             return;
@@ -92,14 +107,11 @@ public final class ItemTransferService {
         distribute(net, jobs);
     }
 
-    private List<TypeJob> extract(PipeNetwork net) {
+    private List<TypeJob> extract(PipeNetwork net, FrameIndex frames) {
         Inventory source = inventoryAt(net.sourceContainer());
         if (source == null) {
             return Collections.emptyList();
         }
-
-        // สแกน item frame ของทั้งท่อครั้งเดียว (ใช้ตัดสิน route ของชนิดที่จะเลือก)
-        FrameIndex frames = FrameIndex.build(net);
 
         // 1 รอบ = 1 ชนิดเท่านั้น: เลือกชนิดแรก (ตามลำดับช่อง) ที่ route ไปถึง output ได้
         // (ถ้าชนิดแรกไปไม่ได้เพราะโดน filter/ไม่มีปลายทาง จะข้ามไปลองชนิดถัดไป เพื่อไม่ให้ท่อตัน)
@@ -132,6 +144,8 @@ public final class ItemTransferService {
             for (PipeOutput out : route) {
                 dests.add(out.destContainer());
             }
+            // ดูดของออกจากต้นทางสำเร็จ -> เอฟเฟกต์ที่ต้นทาง (เราอยู่บน region ต้นทางอยู่แล้ว)
+            playEffect(net.sourceContainer());
             // ได้ชนิดที่จะส่งแล้ว -> คืน job เดียว แล้วหยุด (ไม่ส่งชนิดอื่นในรอบนี้)
             return Collections.singletonList(new TypeJob(proto, removed, dests));
         }
@@ -177,7 +191,12 @@ public final class ItemTransferService {
             for (ItemStack s : leftover.values()) {
                 left += s.getAmount();
             }
+            int inserted = job.remaining - left;
             job.remaining = left;
+            if (inserted > 0) {
+                // มีของเข้าปลายทางจริง -> เอฟเฟกต์ที่ปลายทาง (เราอยู่บน region ปลายทางอยู่แล้ว)
+                playEffect(dest);
+            }
         } catch (RuntimeException ex) {
             // อย่าให้ของหาย: คง job.remaining ไว้เท่าเดิม เพื่อให้เฟสคืนของส่งกลับต้นทาง
             LOG.log(Level.WARNING, lang.msg("transfer.insert-failed"), ex);
@@ -245,6 +264,28 @@ public final class ItemTransferService {
             }
         }
         return removed;
+    }
+
+    /**
+     * เสียง + particle เล็ก ๆ ตอนย้ายของสำเร็จ (ให้ผู้เล่นแยกออกว่าท่อทำงาน ไม่ใช่พัง)
+     * ต้องเรียกบน region ของ loc เท่านั้น (Folia). ห่อ Throwable ไว้เพราะชื่อ Particle/Sound
+     * อาจต่างข้ามเวอร์ชัน — เอฟเฟกต์พังห้ามทำให้การย้ายของพัง/ของหาย
+     */
+    private void playEffect(Location loc) {
+        if (!config.effectsEnabled()) {
+            return;
+        }
+        World world = loc.getWorld();
+        if (world == null) {
+            return;
+        }
+        try {
+            Location at = loc.clone().add(0.5, 1.0, 0.5);
+            world.spawnParticle(Particle.CRIT, at, 6, 0.2, 0.2, 0.2, 0.0);
+            world.playSound(loc, Sound.BLOCK_DISPENSER_DISPENSE, 0.4f, 1.4f);
+        } catch (Throwable ignored) {
+            // เอฟเฟกต์เป็นของประดับ; ข้ามไปเงียบ ๆ ถ้า API ต่างเวอร์ชัน
+        }
     }
 
     private void dropItems(Location loc, Iterable<ItemStack> items) {

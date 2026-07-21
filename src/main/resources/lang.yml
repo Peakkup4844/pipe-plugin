@@ -11,6 +11,7 @@ config:
 
 # Warnings from the item-transfer pipeline. Each is logged with the underlying error.
 transfer:
+  frame-scan-failed: "Failed scanning item frames in a region; those filters are ignored this pulse"
   schedule-failed: "Failed to schedule extract task; releasing pipe"
   extract-task-failed: "Could not run extract task; releasing pipe"
   extract-phase-failed: "Extract phase failed; releasing pipe"

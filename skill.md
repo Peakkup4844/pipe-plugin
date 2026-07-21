@@ -18,7 +18,8 @@
 - **process** = ท่อกระจกสีเดียวกันทั้งเส้น (กระจกแต่ละสี = เครือข่ายแยกกัน)
 - **output** = piston ธรรมดาหันหัวเข้า container (ปลายทาง) — มีได้ **หลายจุดต่อ 1 ท่อ**
 - จ่าย redstone **pulse** เข้า sticky piston → 1 pulse = ย้ายของ **1 ชนิด** สูงสุด `items-per-cycle` (default 32) ชิ้น; ของที่ stack ไม่ได้ = 1 ชิ้น/รอบ
-- **item frame** บนรอยต่อ = ตัวกรอง (gate) ของแต่ละรอยต่อ
+- **item frame** บนบล็อกใดบล็อกหนึ่งของท่อ (กระจก / input piston / output piston) = ตัวกรอง (gate) **รายบล็อก** — ของต้อง match ถึงจะผ่าน/เข้าบล็อกนั้นได้
+- มี **rate limit ต่อท่อ** (`min-pulse-interval-ticks`) + เสียง/particle ตอนย้ายสำเร็จ (`effects`)
 
 ---
 
@@ -36,6 +37,10 @@
 **ห้ามทำ:** เพิ่ม dependency ที่มีเฉพาะ Paper/Folia แบบ compile-time, เรียก method ที่เพิ่งมีในเวอร์ชันใหม่,
 ใช้ `PlayerItemFrameChangeEvent` (Paper-only) — เราจึงอ่าน frame แบบ live แทน
 
+**ระวัง enum churn:** ชื่อค่าใน `Particle`/`Sound` เปลี่ยนข้ามเวอร์ชัน (เช่น `BLOCK_CRACK`→`BLOCK`) —
+เอฟเฟกต์ใน `ItemTransferService.playEffect` ใช้ค่าที่เสถียร (`Particle.CRIT`, `Sound.BLOCK_DISPENSER_DISPENSE`)
+และห่อ `try/catch (Throwable)` ไว้ เพราะเอฟเฟกต์พังห้ามทำให้การย้ายของพัง
+
 ---
 
 ## 3. โครงสร้างคลาส (อัปเดตเมื่อมีการเปลี่ยน)
@@ -45,7 +50,7 @@
 | คลาส | หน้าที่ |
 |---|---|
 | `PipePlugin` | bootstrap: โหลด config, สร้าง FoliaLib, สร้าง services, ลงทะเบียน 3 listener |
-| `PipeConfig` | อ่าน `config.yml`: `itemsPerCycle`, `maxPipeLength`, `matchMode`, `allowedContainers` (null = ทุก Container); รับ `PipeLang` เพื่อ log warning |
+| `PipeConfig` | อ่าน `config.yml`: `itemsPerCycle`, `maxPipeLength`, `minPulseIntervalMillis`, `effectsEnabled`, `matchMode`, `allowedContainers` (null = ทุก Container); รับ `PipeLang` เพื่อ log warning |
 | `PipeLang` | โหลด `lang.yml` (ข้อความ console/log ทั้งหมด เป็นภาษาอังกฤษ); `msg(key, k,v,...)` แทนที่ `{placeholder}`; มี default จาก jar เผื่อ key หาย |
 | `MatchMode` | enum `TYPE` (เทียบ Material) / `SIMILAR` (เทียบ NBT เป๊ะด้วย `isSimilar`) — default = SIMILAR |
 | `PipeNetwork` | โมเดลท่อ 1 เส้น: input, source, glassMaterial, `pipeBlocks`(Set กระจก), `outputs`(List), `outputsByGlass`(Map), `busy`(AtomicBoolean) |
@@ -53,10 +58,10 @@
 | `NetworkDiscovery` | BFS ค้นหา/ตรวจสอบโทโพโลยีจาก sticky piston → คืน `PipeNetwork` (เก็บ output ทุกตัว) |
 | `NetworkRegistry` | cache: `byInputPiston` + reverse index `blockToInput` (สำหรับ invalidate) |
 | `Directions` | ลำดับทิศเดินท่อ: หน้า→ซ้าย→ขวา→บน→ล่าง (`leftOf`, `ordered`, `orderedWithBack`) |
-| `FrameIndex` | **สแกน item frame ทั้งท่อครั้งเดียวต่อ pulse** แล้วตอบ `passes(a,b,item,mode)` ต่อรอยต่อ |
-| `PipeRouter` | จัดเส้นทางไอเทม 1 ชนิดด้วย BFS เคารพ gate → คืน `List<PipeOutput>` เรียงตามลำดับความสำคัญ |
-| `ItemTransferService` | flow ย้ายของ 3 เฟส (extract → distribute → return) แบบ Folia-safe + กันของหาย/ค้าง |
-| `listener/RedstoneTriggerListener` | จับ rising-edge ของ redstone ที่ sticky piston → สั่ง transfer |
+| `FrameIndex` | **block gate:** `buildAsync` สแกน item frame ทั้งท่อ **ทีละ chunk บน region ของมัน** (Folia-safe) แล้ว chain รวม → ตอบ `passes(block,item,mode)` รายบล็อก; `empty()` ไว้เทสต์ |
+| `PipeRouter` | จัดเส้นทางไอเทม 1 ชนิดด้วย BFS เคารพ gate (เช็ค gate ของ input piston ครั้งเดียว + gate ของกระจก/output piston) → คืน `List<PipeOutput>` เรียงตามลำดับความสำคัญ |
+| `ItemTransferService` | flow ย้ายของ: `buildAsync` (สแกนเฟรม) → extract → distribute → return แบบ Folia-safe + กันของหาย/ค้าง; `playEffect` เสียง/particle ตอนสำเร็จ |
+| `listener/RedstoneTriggerListener` | จับ rising-edge ของ redstone ที่ sticky piston → เช็ค `min-pulse-interval` (per-piston) → สั่ง transfer |
 | `listener/PistonGuardListener` | cancel extend/retract ของ piston ที่อยู่ในท่อ (กันดันบล็อก) |
 | `listener/NetworkInvalidationListener` | ล้าง cache เมื่อบล็อกในท่อ (หรือเพื่อนบ้าน) ถูกเปลี่ยน |
 
@@ -95,22 +100,25 @@
 ```
 RedstoneTriggerListener.onRedstone
   └─(กรองถูก ๆ: เป็นท่อที่ cache ไว้ หรือมีกระจกติด)→ runAtLocation(piston): checkPiston
-        └─ rising edge? → discover/validate → ItemTransferService.transfer(net)
-              └─ net.tryAcquire() → runAtLocation(source): extractAndDistribute
-                    ├─ extract: FrameIndex.build (สแกนเฟรมครั้งเดียว)
-                    │           เลือก "ชนิดแรก" (ตามลำดับช่อง) ที่ router.route(net, proto, frames) ไปถึง output ได้
-                    │           ดูดสูงสุด itemsPerCycle (ของ stack ไม่ได้ = 1) → สร้าง TypeJob เดียว แล้วหยุด
-                    └─ distribute: chain CompletableFuture
-                          ต่อ job × dest (เรียงความสำคัญ) → runAtLocation(dest): insertStep (priority fill)
-                          .handle(กลืน error) → runAtLocation(source): returnLeftovers
-                          .whenComplete → net.release()
+        └─ rising edge? + ผ่าน min-pulse-interval? → discover/validate → ItemTransferService.transfer(net)
+              └─ net.tryAcquire() → FrameIndex.buildAsync (สแกนเฟรมทีละ chunk บน region ของมัน แล้ว chain รวม)
+                    └─ whenComplete(frames) → runAtLocation(source): extractAndDistribute(net, frames)
+                          ├─ extract: เลือก "ชนิดแรก" (ตามลำดับช่อง) ที่ router.route(net, proto, frames) ไปถึง output ได้
+                          │           ดูดสูงสุด itemsPerCycle (ของ stack ไม่ได้ = 1) → playEffect(source) → สร้าง TypeJob เดียว แล้วหยุด
+                          └─ distribute: chain CompletableFuture
+                                ต่อ job × dest (เรียงความสำคัญ) → runAtLocation(dest): insertStep (priority fill, playEffect เมื่อเข้าจริง)
+                                .handle(กลืน error) → runAtLocation(source): returnLeftovers
+                                .whenComplete → net.release()
 ```
 
-**กฎ routing (PipeRouter):** BFS จาก input → ใกล้ก่อน, ที่ทางแยกเลือกซ้ายก่อนขวา (`Directions.ordered`),
-ข้ามรอยต่อได้เฉพาะที่ `FrameIndex.passes` ยอม; ถ้าซ้ายโดน filter กั้นก็ไปขวา; คืน output เรียงลำดับความสำคัญ
+> **release ทุก path:** ถ้า `buildAsync` จบแบบ exception → `whenComplete` release; ถ้า schedule extract ไม่ติด → catch release; distribute release ใน `whenComplete`
 
-**กฎ filter (FrameIndex):** frame ที่กินพื้นที่บล็อก X และเกาะไปทาง Y = คุมรอยต่อ X↔Y;
-ไม่มีเฟรม = ผ่าน; มีเฟรม = ของต้อง match อย่างน้อยหนึ่งอัน (union); เทียบตาม `MatchMode`
+**กฎ routing (PipeRouter):** เช็ค gate ของ input piston ก่อน (ไม่ผ่าน = ดูดไม่ได้เลย) → BFS จาก input → ใกล้ก่อน,
+ที่ทางแยกเลือกซ้ายก่อนขวา (`Directions.ordered`), เข้ากระจก/รับ output ได้เฉพาะที่ `FrameIndex.passes(block,...)` ยอม;
+ถ้าซ้ายโดน filter กั้นก็ไปขวา; คืน output เรียงลำดับความสำคัญ
+
+**กฎ filter (FrameIndex — block gate):** frame ที่แปะบล็อก B (support = บล็อกอากาศของ frame + `getAttachedFace()`) = คุมบล็อก B;
+ไม่มีเฟรมบน B = ผ่าน; มีเฟรม = ของต้อง match อย่างน้อยหนึ่งอัน (union); เทียบตาม `MatchMode`
 
 ---
 
@@ -118,6 +126,7 @@ RedstoneTriggerListener.onRedstone
 
 - ใช้ `BlockRedstoneEvent` จับ rising-edge **ไม่ใช่** `BlockPistonExtendEvent` (เพราะ piston ที่หันเข้า container ดันไม่ได้ → extend event ไม่ยิง)
 - rising-edge ดูจาก `poweredState` map (false→true) + `busy` flag กัน double-fire
+- **rate limit:** `lastFire` map (per input piston) บังคับ `min-pulse-interval-ticks` (default 2 = 10 รอบ/วิ); 0 = ปิด — วัดด้วย `System.currentTimeMillis()` (ไม่มี global tick counter ใน Spigot API)
 - ตัวกรองราคาถูกใน `onRedstone`: ข้าม sticky piston ที่ไม่ใช่ท่อ cache และไม่มีกระจกติด (กัน schedule งานทุก redstone tick ของ piston ธรรมดา)
 - cache invalidation: ฟัง break/place/explode/burn/fade + เพื่อนบ้าน 6 ทิศ → ลบ network ออกจาก registry → ค้นใหม่ pulse ถัดไป
 - การเปลี่ยนบล็อกแบบไม่ยิง event (WorldEdit/`/setblock`) จะไม่ invalidate → topology อาจ stale ชั่วคราว (ยอมรับได้: insert ตรวจ container ซ้ำเสมอ)
@@ -127,17 +136,19 @@ RedstoneTriggerListener.onRedstone
 ## 7. config.yml
 
 ```yaml
-items-per-cycle: 32     # จำนวนสูงสุด/รอบ ของชนิดที่ถูกเลือก (>=1); ของ stack ไม่ได้ = 1 ชิ้น/รอบ
-max-pipe-length: 64     # จำนวนกระจกสูงสุดที่ BFS ไล่ (>=1)
-filter-match: SIMILAR   # SIMILAR=NBT เป๊ะ (default) | TYPE=เทียบ Material
-allowed-containers: all # all=ทุก Container | หรือ list ของ Material
+items-per-cycle: 32          # จำนวนสูงสุด/รอบ ของชนิดที่ถูกเลือก (>=1); ของ stack ไม่ได้ = 1 ชิ้น/รอบ
+max-pipe-length: 64          # จำนวนกระจกสูงสุดที่ BFS ไล่ (>=1)
+min-pulse-interval-ticks: 2  # ช่วงขั้นต่ำระหว่างรอบของท่อเดียวกัน (>=0; 20 ticks=1 วิ); 0=ไม่จำกัด
+effects: true                # เสียง+particle ที่ต้นทาง/ปลายทางตอนย้ายสำเร็จ; false=เงียบ
+filter-match: SIMILAR        # SIMILAR=NBT เป๊ะ (default) | TYPE=เทียบ Material
+allowed-containers: all      # all=ทุก Container | หรือ list ของ Material
 ```
 
 **คอมเมนต์ทั้งใน `config.yml` เป็นภาษาอังกฤษ**
 
 ### lang.yml
 ข้อความ console/log ทั้งหมด (ภาษาอังกฤษ) อยู่ใน `resources/lang.yml` โหลดผ่าน `PipeLang`
-(ปลั๊กอินไม่มีข้อความแชตในเกม มีแต่ log — key: `plugin-enabled`, `config.unknown-container`, `transfer.*`)
+(ปลั๊กอินไม่มีข้อความแชตในเกม มีแต่ log — key: `plugin-enabled`, `config.unknown-container`, `transfer.*` รวม `transfer.frame-scan-failed`)
 `{placeholder}` เช่น `{platform}`, `{material}` ถูกแทนที่ตอน runtime
 
 ---
@@ -146,12 +157,13 @@ allowed-containers: all # all=ทุก Container | หรือ list ของ 
 
 - **ของหาย/ดูป:** กันด้วยรูปแบบ extract(count)→insert→return + handle()/try-catch (ข้อ 4.1)
 - **ท่อค้าง:** release ทุก path รวม exception (ข้อ 4.2)
-- **DoS เบา ๆ:** redstone clock จ่ายท่อ valid = ทำงานทุก pulse (ตั้งใจ); `busy` กันซ้อน; `maxPipeLength` จำกัด BFS; ตัวกรอง onRedstone กันงานเกินจาก piston ธรรมดา
-- **NPE world ไม่โหลด:** `FrameIndex.build` และ `dropItems` เช็ค world null
+- **DoS เบา ๆ:** `min-pulse-interval-ticks` จำกัดอัตรารอบต่อท่อ (default 2 ticks); `busy` กันซ้อน; `maxPipeLength` จำกัด BFS; ตัวกรอง onRedstone กันงานเกินจาก piston ธรรมดา
+- **NPE world ไม่โหลด:** `FrameIndex.buildAsync`/`scanChunk` (เช็ค world null + `isChunkLoaded`) และ `dropItems` เช็ค world null
+- **effect enum ต่างเวอร์ชัน:** `playEffect` ห่อ `try/catch (Throwable)` — เอฟเฟกต์พังไม่กระทบการย้ายของ
 - **griefing:** ใครก็แปะ item frame บนท่อคนอื่นได้ (เป็นธรรมชาติของ UI นี้) → ควบคุมด้วยปลั๊กอิน protection ภายนอก (WorldGuard ฯลฯ) — นอกขอบเขตปลั๊กอินนี้
 
 ### ข้อจำกัดที่ยอมรับไว้ (Known limitations)
-- **Folia cross-region:** topology/filter scan ทำบน region ของ input; ถ้าท่อข้ามหลาย region การสแกน entity ข้าม region อาจ error → ควรให้ท่อ 1 เครือข่ายอยู่ใน region เดียว (กรณีปกติของสิ่งก่อสร้างที่ต่อกัน) ส่วนการ insert ปลายทางข้าม region ปลอดภัย
+- **Folia cross-region:** ✅ แก้แล้ว — `FrameIndex.buildAsync` สแกนเฟรมทีละ chunk บน region ของ chunk นั้น และการ insert ปลายทางก็แยกตาม region อยู่แล้ว จึงรองรับท่อข้าม region (แลกกับ scheduler hop ต่อ chunk ที่ท่อพาดถึง → ช้าลงเล็กน้อย)
 - **pulse สั้นมาก (sub-tick):** เพราะอ่านกำลังไฟใน tick ถัดไป pulse 1 tick จาก observer อาจพลาดบ้าง (trade-off ของ Folia-safety)
 - **`poweredState`** เก็บ entry จนกว่า piston จะหาย (เคลียร์เมื่อ checkPiston พบว่าไม่ใช่ sticky piston) — memory leak เล็กน้อยมีขอบเขตจำกัด
 
@@ -185,5 +197,8 @@ testImplementation: spigot-api (เดิม compileOnly), `junit-jupiter`, `moc
 
 ## 10. Out of scope (ตั้งใจไม่ทำ)
 
-GUI, คำสั่ง admin/visualize, permission ละเอียด, ปรับ rate ต่อท่อ, หลาย **input** ต่อเครือข่าย
+GUI, คำสั่ง admin/visualize, permission ละเอียด, ปรับ rate/ฟิลเตอร์แยกต่อท่อ (rate เป็นค่ารวมใน config)
 (ออกแบบเผื่อขยายได้แต่ยังไม่ทำ — ถ้าจะเพิ่ม ให้คงหลักการข้อ 4 และอัปเดตไฟล์นี้)
+
+**อยู่ในขอบเขตแล้ว:** หลาย **output** ต่อท่อ; หลาย **input** (sticky piston หลายตัว) บนกระจกสีเดียวกัน =
+คนละ network ที่ใช้ท่อร่วม ต่างคนต่างทำงาน (ตั้งใจ ไม่ reject)

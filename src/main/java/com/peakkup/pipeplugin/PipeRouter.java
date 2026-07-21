@@ -45,17 +45,21 @@ public final class PipeRouter {
         if (facing == null) {
             return result;
         }
+        // gate การดูดที่ input piston: ถ้าไอเทมไม่ผ่าน frame บน input piston -> ดูดไม่ได้เลย
+        if (!frames.passes(input, item, matchMode)) {
+            return result;
+        }
         // ทิศ "หน้า" ของท่อ = ออกจากต้นทาง (ตรงข้ามกับด้านที่ piston หันเข้ากล่อง)
         BlockFace rootHeading = facing.getOppositeFace();
 
-        // เริ่มจากกระจกที่ติด input piston (ผ่าน gate การดูด)
+        // เริ่มจากกระจกที่ติด input piston (ผ่าน gate ของกระจกก้อนแรก)
         for (BlockFace d : Directions.ordered(rootHeading)) {
             Block n = input.getRelative(d);
             Location nl = n.getLocation();
             if (!net.pipeBlocks().contains(nl)) {
                 continue;
             }
-            if (!frames.passes(input, n, item, matchMode)) {
+            if (!frames.passes(n, item, matchMode)) {
                 continue;
             }
             if (visited.add(nl)) {
@@ -72,10 +76,11 @@ public final class PipeRouter {
             List<PipeOutput> here = net.outputsAtGlass(g.getLocation());
             if (!here.isEmpty()) {
                 for (BlockFace d : Directions.orderedWithBack(h)) {
-                    Location pistonLoc = g.getRelative(d).getLocation();
+                    Block pistonBlock = g.getRelative(d);
+                    Location pistonLoc = pistonBlock.getLocation();
                     for (PipeOutput out : here) {
                         if (out.piston().equals(pistonLoc)
-                                && frames.passes(g, out.piston().getBlock(), item, matchMode)
+                                && frames.passes(pistonBlock, item, matchMode)
                                 && !result.contains(out)) {
                             result.add(out);
                         }
@@ -83,14 +88,14 @@ public final class PipeRouter {
                 }
             }
 
-            // ขยายต่อตามลำดับทิศ (ผ่าน gate ของแต่ละรอยต่อ)
+            // ขยายต่อตามลำดับทิศ (ผ่าน gate ของกระจกก้อนถัดไป)
             for (BlockFace d : Directions.ordered(h)) {
                 Block n = g.getRelative(d);
                 Location nl = n.getLocation();
                 if (!net.pipeBlocks().contains(nl) || visited.contains(nl)) {
                     continue;
                 }
-                if (!frames.passes(g, n, item, matchMode)) {
+                if (!frames.passes(n, item, matchMode)) {
                     continue;
                 }
                 visited.add(nl);

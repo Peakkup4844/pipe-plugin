@@ -15,6 +15,8 @@ public final class PipeConfig {
 
     private final int itemsPerCycle;
     private final int maxPipeLength;
+    private final int minPulseIntervalTicks;
+    private final boolean effects;
     private final MatchMode matchMode;
     /** null = อนุญาตทุก Container */
     private final Set<Material> allowedContainers;
@@ -25,6 +27,8 @@ public final class PipeConfig {
 
         this.itemsPerCycle = Math.max(1, cfg.getInt("items-per-cycle", 32));
         this.maxPipeLength = Math.max(1, cfg.getInt("max-pipe-length", 64));
+        this.minPulseIntervalTicks = Math.max(0, cfg.getInt("min-pulse-interval-ticks", 2));
+        this.effects = cfg.getBoolean("effects", true);
         this.matchMode = MatchMode.fromConfig(cfg.getString("filter-match", "SIMILAR"));
 
         Object raw = cfg.get("allowed-containers", "all");
@@ -51,6 +55,15 @@ public final class PipeConfig {
 
     public int maxPipeLength() {
         return maxPipeLength;
+    }
+
+    /** ช่วงเวลาขั้นต่ำระหว่าง 2 รอบของท่อเดียวกัน (มิลลิวินาที); 0 = ไม่จำกัด */
+    public long minPulseIntervalMillis() {
+        return minPulseIntervalTicks * 50L;
+    }
+
+    public boolean effectsEnabled() {
+        return effects;
     }
 
     public MatchMode matchMode() {

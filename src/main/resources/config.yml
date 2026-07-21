@@ -6,6 +6,15 @@ items-per-cycle: 32
 # Maximum pipe length (number of glass blocks the BFS will walk) to cap search cost.
 max-pipe-length: 64
 
+# Minimum ticks between two transfers on the SAME pipe (per-pipe rate limit).
+# 20 ticks = 1 second. Stops a fast redstone clock from firing hundreds of cycles.
+# 0 disables the limit (a pipe then fires on every rising redstone edge it receives).
+min-pulse-interval-ticks: 2
+
+# Play a small sound + particles at the source and destination when items move,
+# so players can tell a working pipe apart from a broken/empty one. false = silent.
+effects: true
+
 # How the item-frame filter compares items:
 #   SIMILAR = exact NBT match (type + custom name + enchantments + meta) -- default
 #   TYPE    = match by type (Material) only, e.g. every diamond is treated as equal
