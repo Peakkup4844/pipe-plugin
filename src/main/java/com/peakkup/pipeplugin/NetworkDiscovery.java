@@ -4,8 +4,6 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
-import org.bukkit.block.BlockState;
-import org.bukkit.block.Container;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 
@@ -31,9 +29,11 @@ public final class NetworkDiscovery {
     };
 
     private final PipeConfig config;
+    private final ContainerAccess containers;
 
-    public NetworkDiscovery(PipeConfig config) {
+    public NetworkDiscovery(PipeConfig config, ContainerAccess containers) {
         this.config = config;
+        this.containers = containers;
     }
 
     /** คืน network ถ้า block นี้เป็น input piston ที่ต่อท่อถึง output อย่างน้อย 1 จุด ไม่งั้นคืน null */
@@ -101,8 +101,8 @@ public final class NetworkDiscovery {
                     if (pf != null) {
                         Block dest = n.getRelative(pf);
                         if (isAllowedContainer(dest)) {
-                            PipeOutput out = new PipeOutput(
-                                    glass.getLocation(), n.getLocation(), dest.getLocation());
+                            PipeOutput out = new PipeOutput(glass.getLocation(), n.getLocation(),
+                                    dest.getLocation(), dest.getType());
                             outputs.add(out);
                             outputPistons.add(n.getLocation());
                             outputsByGlass.computeIfAbsent(glass.getLocation(), k -> new ArrayList<>())
@@ -133,27 +133,11 @@ public final class NetworkDiscovery {
         );
     }
 
-    /** เช็คเร็ว ๆ ว่า network ที่ cache ไว้ยังพอใช้ได้ (input + ต้นทาง + ยังมี output) */
-    public boolean isStillValid(PipeNetwork net) {
-        Block input = net.inputPiston().getBlock();
-        if (input.getType() != Material.STICKY_PISTON) {
-            return false;
-        }
-        if (!isAllowedContainer(net.sourceContainer().getBlock())) {
-            return false;
-        }
-        return !net.outputs().isEmpty();
-    }
-
     boolean isAllowedContainer(Block block) {
-        BlockState state = block.getState();
-        if (!(state instanceof Container)) {
-            return false;
-        }
-        return config.isContainerAllowed(block.getType());
+        return containers.isUsable(block);
     }
 
-    static BlockFace facingOf(Block block) {
+    public static BlockFace facingOf(Block block) {
         BlockData data = block.getBlockData();
         return (data instanceof Directional dir) ? dir.getFacing() : null;
     }

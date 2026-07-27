@@ -16,6 +16,7 @@ import org.bukkit.event.block.BlockRedstoneEvent;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * ตรวจจับ rising-edge ของ redstone ที่จ่ายเข้า sticky piston -> สั่งย้ายของ 1 รอบ
@@ -35,10 +36,17 @@ public final class RedstoneTriggerListener implements Listener {
     private final ItemTransferService transferService;
     private final PipeConfig config;
 
-    /** สถานะ powered ล่าสุดของ sticky piston แต่ละตัว เพื่อจับขอบขาขึ้น */
-    private final Map<Location, Boolean> poweredState = new ConcurrentHashMap<>();
-    /** เวลา (ms) ที่ท่อยิงรอบล่าสุด — ใช้บังคับ min-pulse-interval */
-    private final Map<Location, Long> lastFire = new ConcurrentHashMap<>();
+    /** สถานะของ sticky piston หนึ่งตัว — รวมไว้ก้อนเดียวเพื่อค้น map ครั้งเดียวต่อ event */
+    private static final class PistonState {
+        /** มีงานเช็คไฟที่ queue ไว้แล้วและยังไม่ได้รัน */
+        final AtomicBoolean queued = new AtomicBoolean();
+        /** powered ครั้งล่าสุดที่ตรวจ — ใช้จับขอบขาขึ้น */
+        volatile boolean powered;
+        /** เวลา (ms) ที่ท่อยิงรอบล่าสุด — ใช้บังคับ min-pulse-interval; 0 = ยังไม่เคยยิง */
+        volatile long lastFire;
+    }
+
+    private final Map<Location, PistonState> pistons = new ConcurrentHashMap<>();
 
     public RedstoneTriggerListener(FoliaLib foliaLib,
                                    NetworkRegistry registry,
@@ -67,8 +75,21 @@ public final class RedstoneTriggerListener implements Listener {
             if (registry.get(loc) == null && !hasAdjacentGlass(candidate)) {
                 continue;
             }
+            PistonState state = pistons.computeIfAbsent(loc, k -> new PistonState());
+            // redstone หนึ่งครั้งยิง event ออกมาเป็นชุด (dust ทั้งเส้นอัปเดตทีละก้อน, ทั้งขาขึ้นและขาลง)
+            // แต่ทุกก้อนถามคำถามเดียวกันคือ "ตอนงานรัน piston ตัวนี้มีไฟหรือยัง" ซึ่งอ่านสดตอนนั้นอยู่แล้ว
+            // จึง queue ไว้ตัวเดียวพอ — กันคลื่นงานที่เช็คไฟซ้ำ ๆ ทั้งที่ได้คำตอบเดียวกัน
+            if (!state.queued.compareAndSet(false, true)) {
+                continue;
+            }
             // เช็คกำลังไฟจริงบนเธรดของ region ที่เป็นเจ้าของ (tick ถัดไป, Folia-safe)
-            foliaLib.getScheduler().runAtLocation(loc, t -> checkPiston(loc));
+            // จงใจไม่รันทันที: ตอน event นี้ยิง ค่ากำลังไฟของบล็อกยังไม่ถูกเขียนลงโลก
+            try {
+                foliaLib.getScheduler().runAtLocation(loc, t -> checkPiston(loc, state));
+            } catch (RuntimeException | Error e) {
+                state.queued.set(false); // schedule ไม่ติด -> อย่าล็อกไว้จนท่อตายถาวร
+                throw e;
+            }
         }
     }
 
@@ -85,17 +106,18 @@ public final class RedstoneTriggerListener implements Listener {
         return false;
     }
 
-    private void checkPiston(Location loc) {
+    private void checkPiston(Location loc, PistonState state) {
+        state.queued.set(false); // ปลดก่อนอ่านค่า: event ที่มาทีหลังต้อง queue รอบใหม่ได้
+
         Block piston = loc.getBlock();
         if (piston.getType() != Material.STICKY_PISTON) {
-            poweredState.remove(loc);
-            lastFire.remove(loc);
+            pistons.remove(loc); // ไม่ใช่ piston แล้ว -> ทิ้งสถานะ ไม่ให้ map บวมสะสม
             return;
         }
 
         boolean powered = piston.isBlockIndirectlyPowered() || piston.isBlockPowered();
-        Boolean prev = poweredState.put(loc, powered);
-        boolean was = prev != null && prev;
+        boolean was = state.powered;
+        state.powered = powered;
 
         if (!powered || was) {
             return; // ไม่ใช่ขอบขาขึ้น
@@ -105,25 +127,37 @@ public final class RedstoneTriggerListener implements Listener {
         long interval = config.minPulseIntervalMillis();
         if (interval > 0) {
             long now = System.currentTimeMillis();
-            Long last = lastFire.get(loc);
-            if (last != null && now - last < interval) {
+            if (state.lastFire != 0 && now - state.lastFire < interval) {
                 return;
             }
-            lastFire.put(loc, now);
+            state.lastFire = now;
         }
 
-        // ขอบขาขึ้น -> หา/ตรวจท่อ แล้วย้ายของ 1 รอบ
-        PipeNetwork net = registry.get(loc);
-        if (net == null || !discovery.isStillValid(net)) {
-            net = discovery.discover(piston);
-            if (net != null) {
-                registry.put(net);
-            } else {
-                registry.remove(loc);
-            }
+        // ขอบขาขึ้น -> ค้นท่อ "ใหม่ทุกรอบ" แล้วย้ายของ 1 รอบ
+        //
+        // จงใจไม่เชื่อ cache ในการตัดสินโทโพโลยี เพราะการเปลี่ยนบล็อกหลายแบบไม่ยิง event ให้ invalidate
+        // (WorldEdit / /fill / ปลั๊กอินอื่น) และบางลำดับการวางก็ไม่โดน invalidate ด้วย เช่น
+        // "วาง output piston ก่อน แล้วค่อยวางกล่องปลายทาง" — ตอนวางกล่อง เพื่อนบ้านของมันคือ piston
+        // ซึ่งยังไม่เคยถูก track (ตอนนั้นยังไม่ใช่ output) จึงไม่มีอะไรถูก invalidate → output ใหม่
+        // "ล่องหน" จนกว่าจะไปทุบบล็อกอื่นให้ cache ล้าง
+        //
+        // BFS ถูกจำกัดด้วย max-pipe-length อยู่แล้ว (~64 บล็อก) + มี rate limit ต่อท่อ จึงถูกพอที่จะทำทุก pulse
+        // cache ยังมีอยู่เพื่อ: กันการรื้อ reverse index ทุกรอบ (ถ้าโทโพโลยีเท่าเดิม) และให้ PistonGuard ใช้
+        PipeNetwork fresh = discovery.discover(piston);
+        if (fresh == null) {
+            registry.remove(loc);
+            return;
         }
-        if (net != null) {
-            transferService.transfer(net);
+
+        PipeNetwork cached = registry.get(loc);
+        PipeNetwork net;
+        if (cached != null && cached.sameTopologyAs(fresh)) {
+            net = cached; // เหมือนเดิมทุกอย่าง -> ใช้ตัวเดิม (คงล็อก busy, ไม่ต้องแตะ index)
+        } else {
+            fresh.adoptLockFrom(cached); // รอบเก่าที่ยังวิ่งอยู่ต้องกันรอบใหม่ได้
+            registry.put(fresh);
+            net = fresh;
         }
+        transferService.transfer(net);
     }
 }

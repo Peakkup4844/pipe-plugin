@@ -15,16 +15,82 @@ min-pulse-interval-ticks: 2
 # so players can tell a working pipe apart from a broken/empty one. false = silent.
 effects: true
 
-# How the item-frame filter compares items:
+# Skip containers whose real contents are managed by another plugin instead of the
+# vanilla block inventory. Those chests look like a normal CHEST to the server, but the
+# plugin keeps the items in its own storage: writing into the vanilla inventory would make
+# items invisible and lost when the chest is broken, and reading a "display" item out of one
+# would create items from nothing. Pipes therefore refuse them as a source/destination.
+#
+# This option controls two "refuse it on sight" checks:
+#   1. WildChests is asked directly (normal and linked chests).
+#   2. Any container whose inventory is not one of the server's own classes is skipped --
+#      this catches every storage plugin, including ones we have never heard of.
+#      Each such class is logged once so you can report it.
+#
+# true  = safe: pipes ignore such chests (default)
+# false = let pipes use them anyway (NOT recommended -- can destroy or duplicate items)
+#
+# WildChests STORAGE UNITS are the exception: pipes use them even on 'true'. A storage unit
+# keeps its stock as one number that WildChests will tell us, so every cycle can be checked
+# against that real number instead of the single "display" stack it draws in the inventory --
+# which is what makes them safe. Its normal and linked chests are still refused, because their
+# items live in the plugin's own pages and writing into the block inventory would lose them.
+#
+# A third check is ALWAYS on and cannot be switched off, because it is a safety invariant
+# rather than a policy: every cycle is verified against what the container actually did --
+# the source must really lose what was taken, and a destination must really gain what it said
+# it stored. Those numbers come from the owning plugin when it can report them (storage units)
+# and from the block inventory otherwise. A container that fails is restored where possible and
+# then ignored for the rest of the session, so it can cost at most one cycle, once. The warning
+# names the inventory class -- please report it.
+skip-plugin-managed-chests: true
+
+# Fire an InventoryMoveItemEvent for every insert a pipe makes, the same event vanilla hoppers
+# use. This is what lets land-protection plugins (WorldGuard, GriefPrevention, Towny, LWC) and
+# logging plugins (CoreProtect) see a pipe transfer and block or record it. With it off, anyone
+# can point a sticky piston at a chest inside someone else's claim and drain it, because nothing
+# else on the server ever learns that the items moved.
+#
+# true  = pipes obey the same protections hoppers do (default)
+# false = pipes move items silently. Only turn this off on a server with no claims at all, or if
+#         a plugin cancels every hopper move (some anti-lag plugins do) and stops pipes working.
+#
+# Note on Folia: the event is only fired when the source container belongs to the region the
+# insert is running on. A pipe that genuinely spans two regions skips it, because handing another
+# region's inventory to a listener would break Folia's threading rules.
+call-inventory-move-event: true
+
+# How the ITEM-FRAME FILTER compares items:
 #   SIMILAR = exact NBT match (type + custom name + enchantments + meta) -- default
 #   TYPE    = match by type (Material) only, e.g. every diamond is treated as equal
+# This only affects which items a frame lets through. Items are always grouped, moved and put
+# back by exact match, so a pipe can never merge two NBT-different stacks into one kind.
 filter-match: SIMILAR
 
 # Which storage blocks are allowed as source/destination:
-#   all              = every Container (chest, barrel, shulker, hopper, dropper, dispenser, ...)
-#   or provide a list = only the listed materials are allowed, e.g.
-# allowed-containers:
-#   - CHEST
-#   - TRAPPED_CHEST
-#   - BARREL
+#   all  = every Container (chest, barrel, shulker, hopper, dropper, dispenser, ...)
+#   else = only the materials you name. Write them on one line:
+#
+#            allowed-containers: CHEST, TRAPPED_CHEST, BARREL
+#
+#          or as a YAML list, by REPLACING the "allowed-containers: all" line below with:
+#
+#            allowed-containers:
+#              - CHEST
+#              - TRAPPED_CHEST
+#              - BARREL
+#
+# IMPORTANT: replace that line -- do not add a second "allowed-containers:" above it.
+# YAML keeps only the LAST of two identical keys, so the list would be dropped without
+# any error and every container would stay allowed. The plugin logs the setting it
+# actually used at every start ("Allowed containers: ..."); check that line if a
+# restriction seems to have no effect.
+#
+# NOTE: a HOPPER moves items on its own every ~8 ticks (vanilla), independent of redstone
+# pulses. Using a hopper as source/destination is safe (the pipe never duplicates items),
+# but its own suction/push can make items flow "without a pulse" or loop back. If you want
+# the pipe to be the ONLY thing that moves items, leave hoppers out of the list above.
+#
+# ENDER_CHEST is never used, even if you list it: its inventory belongs to the player who
+# opens it, not to the block, so a pipe could duplicate items or move another player's.
 allowed-containers: all

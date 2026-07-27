@@ -6,8 +6,22 @@
 plugin-enabled: "Enabled on platform: {platform}"
 
 config:
-  # Warned when allowed-containers lists a material name that does not exist.
-  unknown-container: "allowed-containers: unknown material '{material}' (skipped)"
+  # Warned when allowed-containers lists a name that is not an existing block material.
+  unknown-container: "allowed-containers: '{material}' is not a block material (skipped)"
+  # Logged every start so the setting that actually took effect is visible. If this says
+  # "all" when you listed materials, the list did not load -- see the note in config.yml.
+  allowed-containers: "Allowed containers: {value}"
+
+# Detection of storage plugins that keep item data outside the vanilla block inventory.
+external-storage:
+  # Logged when such a plugin was found. Storage units stay usable because their real stock can
+  # be read and verified every cycle; the rest are skipped while the option is on.
+  hooked: "Linked to {plugin}. Its storage units can be read directly, so pipes use them and verify every cycle; its other chests are skipped while skip-plugin-managed-chests is true, because their items live outside the vanilla inventory."
+  # Logged when the plugin is present but its API did not match what we expect.
+  # Pipes still refuse any container whose inventory is not a server one, so chests stay protected.
+  hook-failed: "{plugin} is installed but its API could not be read; falling back to the generic check (containers with a plugin-owned inventory are still skipped). Its storage units cannot be verified either, so a pipe will put the items back and stop using each one after a single warning. Please report this so the hook can be updated."
+  # Logged once per class when a container turns out to be backed by a plugin's own inventory.
+  foreign-inventory: "Skipping a container backed by a plugin-owned inventory ({class}); its items do not live in the block, so a pipe could destroy them. Set skip-plugin-managed-chests: false to override."
 
 # Warnings from the item-transfer pipeline. Each is logged with the underlying error.
 transfer:
@@ -17,4 +31,18 @@ transfer:
   extract-phase-failed: "Extract phase failed; releasing pipe"
   insert-phase-error: "Insert phase error; returning items to source"
   insert-failed: "Failed inserting into output; will return items to source"
+  # A listener of another plugin threw while handling our InventoryMoveItemEvent. The move is
+  # allowed through rather than held back, so a broken listener cannot strand items in a pipe.
+  move-event-failed: "A plugin threw while handling the pipe's InventoryMoveItemEvent; the transfer was allowed through"
   return-failed: "Failed returning leftovers to source"
+  # Last-resort warning: the return phase could not even be scheduled (world unloaded mid-cycle),
+  # so items still in flight had nowhere to go. This is the only case where a pipe can lose items.
+  return-schedule-failed: "Could not schedule the return phase at {loc}; {count} item(s) still in flight were lost"
+  # Logged once per container when the source did not actually lose the items we removed from it
+  # (a plugin-owned/display inventory). Everything taken is put straight back and the container is
+  # never used again until the server restarts, so this can cost at most one cycle.
+  source-not-conserved: "Source container at {loc} ({inv}) did not lose the items taken from it (took {took}, it lost {lost}); the items were put back and this container will be ignored from now on. Its contents are managed by another plugin - keep pipes away from it, and please report the block and the plugin that owns it."
+  # Logged once per container when a destination reported storing items but its contents did not grow.
+  # Nothing is taken back (that would duplicate items if it really did store them); the container is
+  # simply never used again, so this can cost at most one cycle.
+  dest-not-conserved: "Destination container at {loc} ({inv}) accepted {sent} item(s) but only gained {gained}; it will be ignored from now on. Its contents are managed by another plugin - keep pipes away from it, and please report the block and the plugin that owns it."

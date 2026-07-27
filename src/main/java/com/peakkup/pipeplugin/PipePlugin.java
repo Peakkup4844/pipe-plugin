@@ -29,9 +29,13 @@ public final class PipePlugin extends JavaPlugin {
         this.pipeConfig = new PipeConfig(this, lang);
         this.registry = new NetworkRegistry();
 
-        NetworkDiscovery discovery = new NetworkDiscovery(pipeConfig);
+        ExternalStorageGuard storageGuard = new ExternalStorageGuard(this, pipeConfig, lang);
+        ContainerAccess containers = new ContainerAccess(pipeConfig, storageGuard);
+        NetworkDiscovery discovery = new NetworkDiscovery(pipeConfig, containers);
         PipeRouter router = new PipeRouter(pipeConfig.matchMode());
-        ItemTransferService transferService = new ItemTransferService(foliaLib, pipeConfig, router, lang);
+        RegionExecutor regions = new RegionExecutor(foliaLib);
+        ItemTransferService transferService =
+                new ItemTransferService(regions, pipeConfig, router, lang, containers);
 
         getServer().getPluginManager().registerEvents(
                 new RedstoneTriggerListener(foliaLib, registry, discovery, transferService, pipeConfig), this);
@@ -49,21 +53,5 @@ public final class PipePlugin extends JavaPlugin {
         if (registry != null) {
             registry.clear();
         }
-    }
-
-    public NetworkRegistry getRegistry() {
-        return registry;
-    }
-
-    public PipeConfig getPipeConfig() {
-        return pipeConfig;
-    }
-
-    public PipeLang getLang() {
-        return lang;
-    }
-
-    public FoliaLib getFoliaLib() {
-        return foliaLib;
     }
 }

@@ -12,6 +12,8 @@ import org.bukkit.event.block.BlockFadeEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 
+import java.util.List;
+
 /**
  * ล้าง cache ของท่อเมื่อบล็อกที่เป็นส่วนของท่อถูกทำลาย/เปลี่ยน
  * ท่อจะถูกค้นหาใหม่อัตโนมัติในรอบ pulse ถัดไป
@@ -29,8 +31,16 @@ public final class NetworkInvalidationListener implements Listener {
             BlockFace.WEST, BlockFace.UP, BlockFace.DOWN
     };
 
-    /** invalidate ทั้งบล็อกนี้และเพื่อนบ้าน 6 ทิศ (รองรับการต่อ/ถอดชิ้นส่วนข้างท่อ) */
+    /**
+     * invalidate ทั้งบล็อกนี้และเพื่อนบ้าน 6 ทิศ (รองรับการต่อ/ถอดชิ้นส่วนข้างท่อ)
+     *
+     * <p>ออกก่อนทันทีถ้ายังไม่มีท่อไหนถูก cache ไว้เลย — เมธอดนี้ทำงานกับ<b>ทุกบล็อกที่ถูกวาง/ทุบ
+     * ในเซิร์ฟ</b> ไม่ใช่เฉพาะแถวท่อ จึงไม่ควรไปสร้าง Block/Location 6 ตัวเปล่า ๆ ทุกครั้ง
+     */
     private void invalidateAround(Block block) {
+        if (registry.isEmpty()) {
+            return;
+        }
         registry.invalidateByBlock(block.getLocation());
         for (BlockFace f : FACES) {
             registry.invalidateByBlock(block.getRelative(f).getLocation());
@@ -59,14 +69,19 @@ public final class NetworkInvalidationListener implements Listener {
 
     @EventHandler(ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent event) {
-        for (Block block : event.blockList()) {
-            registry.invalidateByBlock(block.getLocation());
-        }
+        invalidateAll(event.blockList());
     }
 
     @EventHandler(ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent event) {
-        for (Block block : event.blockList()) {
+        invalidateAll(event.blockList());
+    }
+
+    private void invalidateAll(List<Block> blocks) {
+        if (registry.isEmpty()) {
+            return; // ระเบิดลูกหนึ่งมีได้เป็นร้อยบล็อก ไม่ต้องไล่ถ้ายังไม่มีท่อไหนถูก cache
+        }
+        for (Block block : blocks) {
             registry.invalidateByBlock(block.getLocation());
         }
     }

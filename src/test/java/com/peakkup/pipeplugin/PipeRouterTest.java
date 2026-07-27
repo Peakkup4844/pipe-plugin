@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * เทสต์ตรรกะการจัดเส้นทางของ {@link PipeRouter} ด้วยโลกจำลอง (ไม่มี filter — ใช้ FrameIndex.empty)
@@ -47,7 +48,7 @@ class PipeRouterTest {
 
         /** output: piston ที่ (px,py,pz) เกาะกระจก (gx,gy,gz) ปล่อยลง dest (dx,dy,dz) */
         PipeOutput output(int gx, int gy, int gz, int px, int py, int pz, int dx, int dy, int dz) {
-            PipeOutput out = new PipeOutput(grid.loc(gx, gy, gz), grid.loc(px, py, pz), grid.loc(dx, dy, dz));
+            PipeOutput out = new PipeOutput(grid.loc(gx, gy, gz), grid.loc(px, py, pz), grid.loc(dx, dy, dz), Material.CHEST);
             outputs.add(out);
             byGlass.computeIfAbsent(grid.loc(gx, gy, gz), k -> new ArrayList<>()).add(out);
             return out;
@@ -123,5 +124,74 @@ class PipeRouterTest {
         List<PipeOutput> route = router.route(b.build(), anyItem, FrameIndex.empty());
 
         assertEquals(List.of(left, right), route);
+    }
+
+    // --- filter gate (item frame) : ใช้ router โหมด TYPE + ไอเทมที่มีชนิดจริง ---
+
+    private final PipeRouter typeRouter = new PipeRouter(MatchMode.TYPE);
+
+    private static ItemStack typed(Material type) {
+        ItemStack s = mock(ItemStack.class);
+        when(s.getType()).thenReturn(type);
+        return s;
+    }
+
+    @Test
+    void frameOnInputPistonBlocksSuctionOfNonMatchingItem() {
+        Builder b = new Builder();
+        b.glass(0, 0, 1).glass(0, 0, 2).glass(0, 0, 3);
+        b.output(0, 0, 3, 0, 0, 4, 0, 0, 5);
+
+        Map<Location, List<ItemStack>> gates = new HashMap<>();
+        gates.put(b.grid.loc(0, 0, 0), List.of(typed(Material.IRON_INGOT))); // gate ที่ input = iron เท่านั้น
+
+        List<PipeOutput> route = typeRouter.route(b.build(), typed(Material.DIAMOND), FrameIndex.forTesting(gates));
+
+        assertTrue(route.isEmpty(), "diamond ไม่ผ่าน gate ที่ input piston -> ดูดไม่ได้");
+    }
+
+    @Test
+    void frameOnInputPistonAllowsMatchingItem() {
+        Builder b = new Builder();
+        b.glass(0, 0, 1).glass(0, 0, 2).glass(0, 0, 3);
+        PipeOutput out = b.output(0, 0, 3, 0, 0, 4, 0, 0, 5);
+
+        Map<Location, List<ItemStack>> gates = new HashMap<>();
+        gates.put(b.grid.loc(0, 0, 0), List.of(typed(Material.DIAMOND)));
+
+        List<PipeOutput> route = typeRouter.route(b.build(), typed(Material.DIAMOND), FrameIndex.forTesting(gates));
+
+        assertEquals(List.of(out), route);
+    }
+
+    @Test
+    void frameOnGlassBranchReroutesNonMatchingItemToOtherBranch() {
+        Builder b = new Builder();
+        b.glass(0, 0, 1);
+        b.glass(1, 0, 1);   // กิ่งซ้าย (EAST)
+        b.glass(-1, 0, 1);  // กิ่งขวา (WEST)
+        b.output(1, 0, 1, 2, 0, 1, 3, 0, 1);                 // output กิ่งซ้าย
+        PipeOutput right = b.output(-1, 0, 1, -2, 0, 1, -3, 0, 1); // output กิ่งขวา
+
+        Map<Location, List<ItemStack>> gates = new HashMap<>();
+        gates.put(b.grid.loc(1, 0, 1), List.of(typed(Material.IRON_INGOT))); // กั้นกิ่งซ้ายไว้ให้ iron
+
+        List<PipeOutput> route = typeRouter.route(b.build(), typed(Material.DIAMOND), FrameIndex.forTesting(gates));
+
+        assertEquals(List.of(right), route, "diamond โดนกั้นที่กิ่งซ้าย -> เด้งไปกิ่งขวา");
+    }
+
+    @Test
+    void frameOnOutputPistonRejectsNonMatchingItem() {
+        Builder b = new Builder();
+        b.glass(0, 0, 1).glass(0, 0, 2).glass(0, 0, 3);
+        b.output(0, 0, 3, 0, 0, 4, 0, 0, 5);
+
+        Map<Location, List<ItemStack>> gates = new HashMap<>();
+        gates.put(b.grid.loc(0, 0, 4), List.of(typed(Material.IRON_INGOT))); // output รับ iron เท่านั้น
+
+        List<PipeOutput> route = typeRouter.route(b.build(), typed(Material.DIAMOND), FrameIndex.forTesting(gates));
+
+        assertTrue(route.isEmpty(), "output รับเฉพาะ iron -> diamond ไปไม่ถึง");
     }
 }

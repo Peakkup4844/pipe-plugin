@@ -1,17 +1,16 @@
 package com.peakkup.pipeplugin;
 
-import com.tcoded.folialib.FoliaLib;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.World;
-import org.bukkit.block.Block;
-import org.bukkit.block.BlockState;
-import org.bukkit.block.Container;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -32,28 +31,36 @@ public final class ItemTransferService {
 
     private static final Logger LOG = Logger.getLogger("PipePlugin");
 
-    private final FoliaLib foliaLib;
+    private final RegionExecutor regions;
     private final PipeConfig config;
     private final PipeRouter router;
     private final PipeLang lang;
+    private final ContainerAccess containers;
 
-    public ItemTransferService(FoliaLib foliaLib, PipeConfig config, PipeRouter router, PipeLang lang) {
-        this.foliaLib = foliaLib;
+    public ItemTransferService(RegionExecutor regions, PipeConfig config, PipeRouter router,
+                               PipeLang lang, ContainerAccess containers) {
+        this.regions = regions;
         this.config = config;
         this.router = router;
         this.lang = lang;
+        this.containers = containers;
     }
 
     /** งานย้ายของหนึ่งชนิดต่อหนึ่งรอบ */
     private static final class TypeJob {
         final ItemStack proto;          // ตัวแทนของชนิดนี้ (amount = 1)
         final List<Location> dests;     // ปลายทางเรียงตามลำดับความสำคัญ
+        final List<int[]> sourceSlots;  // ช่องต้นทางที่ดูดมา {slot, amount} — ใช้คืนกลับที่เดิม
+        final Inventory sourceInventory; // ใช้ประกอบ InventoryMoveItemEvent เท่านั้น (อาจเป็น null)
         int remaining;                  // ยังเหลือต้องส่งอีกกี่ชิ้น
 
-        TypeJob(ItemStack proto, int remaining, List<Location> dests) {
+        TypeJob(ItemStack proto, int remaining, List<Location> dests, List<int[]> sourceSlots,
+                Inventory sourceInventory) {
             this.proto = proto;
             this.remaining = remaining;
             this.dests = dests;
+            this.sourceSlots = sourceSlots;
+            this.sourceInventory = sourceInventory;
         }
     }
 
@@ -66,15 +73,14 @@ public final class ItemTransferService {
         //  2) extract บน region ต้นทาง -> distribute -> whenComplete(release)
         // ทุก path ที่พัง (schedule ไม่ติด / future จบแบบ exception) ต้อง release
         try {
-            FrameIndex.buildAsync(foliaLib, net, lang).whenComplete((frames, err) -> {
+            FrameIndex.buildAsync(regions, net, lang).whenComplete((frames, err) -> {
                 if (err != null || frames == null) {
                     net.release();
                     LOG.log(Level.WARNING, lang.msg("transfer.frame-scan-failed"), err);
                     return;
                 }
                 try {
-                    foliaLib.getScheduler()
-                            .runAtLocation(net.sourceContainer(), t -> extractAndDistribute(net, frames))
+                    regions.at(net.sourceContainer(), () -> extractAndDistribute(net, frames))
                             .exceptionally(e -> {
                                 // task body ไม่เคยรันสำเร็จ (extractAndDistribute จัดการ release เองไม่ได้)
                                 net.release();
@@ -129,25 +135,55 @@ public final class ItemTransferService {
             proto.setAmount(1);
 
             List<PipeOutput> route = router.route(net, proto, frames);
-            if (route.isEmpty()) {
+            // คัดปลายทางที่ "รับชนิดนี้ไม่ได้แน่ ๆ" ออกตั้งแต่ตอนนี้ (ตัดสินจาก Material ที่จำไว้ตอนค้นท่อ
+            // จึงไม่ต้องแตะ region อื่น) ถ้าไม่เหลือปลายทางเลยให้ข้ามไปลองชนิดถัดไป — ไม่งั้นท่อจะดูด
+            // ของชนิดนี้ออกมาแล้วคืนกลับวนทุก pulse จนของชนิดอื่นไม่มีวันได้ไป
+            List<Location> dests = new ArrayList<>(route.size());
+            for (PipeOutput out : route) {
+                if (ContainerAccess.canHold(out.destMaterial(), proto)) {
+                    dests.add(out.destContainer());
+                }
+            }
+            if (dests.isEmpty()) {
                 continue; // ชนิดนี้ไปไหนไม่ได้ -> ลองชนิดถัดไป
             }
 
             // เพดานต่อรอบ: ปกติ items-per-cycle; แต่ของที่ stack ไม่ได้ (maxStackSize<=1) ส่งได้แค่ 1 ชิ้น
             int cap = proto.getMaxStackSize() <= 1 ? 1 : config.itemsPerCycle();
-            int removed = removeUpTo(source, proto, cap);
-            if (removed <= 0) {
+            BigInteger before = containers.trueCount(net.sourceContainer(), source, proto);
+            InventoryOps.Taken taken = InventoryOps.removeUpTo(source, proto, cap);
+            if (taken.total() <= 0) {
                 continue;
             }
 
-            List<Location> dests = new ArrayList<>(route.size());
-            for (PipeOutput out : route) {
-                dests.add(out.destContainer());
+            // --- ด่านกันของหาย/ของเพิ่มที่ต้นทาง: ต้นทางต้องเสียของไปเท่าที่เราดูดมาจริง ๆ ---
+            // อ่านซ้ำในเธรดเดิม tick เดียวกัน จึงไม่มีใครมาแทรกกลางคัน ผลต่างที่ได้คือความจริง
+            // "จำนวนจริง" มาจาก trueCount ซึ่งถามเจ้าของกล่องก่อน (storage unit นับจาก inventory ไม่ได้)
+            // ถ้ายังไม่ตรง แปลว่ากล่องนี้ไม่มีใครรู้จัก และเราแยกไม่ออกเลยว่าเป็นแบบไหน:
+            //   ก) "ไอเทมโชว์" — ของไม่เคยหายไปจริง  -> ส่งต่อ = เสกของ (dupe)
+            //   ข) "หักจริงแต่วาดกลับ" — ปลั๊กอินหักจำนวนจริงไปแล้วแต่วาดสต๊ากเดิมคืน -> ทิ้ง = ของหาย
+            // เราถือของอยู่ในมือ ณ จุดนี้ จึงต้อง "ยัดกลับทั้งหมด" เสมอ — ห้ามทิ้งเด็ดขาด
+            // แล้วขึ้นบัญชีดำกล่องนี้ถาวร ความเสียหายจึงถูกจำกัดไว้ที่รอบเดียวต่อกล่อง ไม่ใช่ทุก pulse
+            BigInteger removed =
+                    before.subtract(containers.trueCount(net.sourceContainer(), source, proto));
+            if (!removed.equals(BigInteger.valueOf(taken.total()))) {
+                returnLeftovers(net, Collections.singletonList(new TypeJob(
+                        proto, taken.total(), Collections.emptyList(), taken.slots(), source)));
+                if (containers.distrust(net.sourceContainer())) {
+                    LOG.warning(lang.msg("transfer.source-not-conserved",
+                            "loc", describe(net.sourceContainer()),
+                            "inv", source.getClass().getSimpleName(),
+                            "took", String.valueOf(taken.total()),
+                            "lost", removed.toString()));
+                }
+                return Collections.emptyList();
             }
+
             // ดูดของออกจากต้นทางสำเร็จ -> เอฟเฟกต์ที่ต้นทาง (เราอยู่บน region ต้นทางอยู่แล้ว)
             playEffect(net.sourceContainer());
             // ได้ชนิดที่จะส่งแล้ว -> คืน job เดียว แล้วหยุด (ไม่ส่งชนิดอื่นในรอบนี้)
-            return Collections.singletonList(new TypeJob(proto, removed, dests));
+            return Collections.singletonList(
+                    new TypeJob(proto, taken.total(), dests, taken.slots(), source));
         }
         return Collections.emptyList();
     }
@@ -161,7 +197,7 @@ public final class ItemTransferService {
                     if (job.remaining <= 0) {
                         return CompletableFuture.completedFuture(null);
                     }
-                    return foliaLib.getScheduler().runAtLocation(dest, t -> insertStep(job, dest));
+                    return regions.at(dest, () -> insertStep(net, job, dest));
                 });
             }
         }
@@ -173,39 +209,151 @@ public final class ItemTransferService {
                     }
                     return null;
                 })
-                .thenCompose(v -> foliaLib.getScheduler()
-                        .runAtLocation(net.sourceContainer(), t -> returnLeftovers(net, jobs)))
-                .whenComplete((v, e) -> net.release());
+                .thenCompose(v -> regions.at(net.sourceContainer(), () -> returnLeftovers(net, jobs)))
+                .whenComplete((v, e) -> {
+                    net.release();
+                    if (e != null) {
+                        // เฟสคืนของ schedule ไม่ติดเลย (world unload ฯลฯ) = ของที่ยังค้างในมือไม่มีที่ไป
+                        // เคสสุดขอบเดียวที่ของหายได้ ต้องไม่เงียบ ให้แอดมินเห็นว่าหายไปกี่ชิ้น
+                        int stranded = 0;
+                        for (TypeJob job : jobs) {
+                            stranded += Math.max(0, job.remaining);
+                        }
+                        LOG.log(Level.WARNING, lang.msg("transfer.return-schedule-failed",
+                                "loc", describe(net.sourceContainer()),
+                                "count", String.valueOf(stranded)), e);
+                    }
+                });
     }
 
-    private void insertStep(TypeJob job, Location dest) {
+    private void insertStep(PipeNetwork net, TypeJob job, Location dest) {
+        Inventory inv;
+        BigInteger before;
         try {
-            Inventory inv = inventoryAt(dest);
+            inv = inventoryAt(dest);
             if (inv == null || job.remaining <= 0) {
                 return;
             }
+            // ปลายทางรับชนิดนี้ไม่ได้ (shulker ซ้อน shulker / storage unit ที่เก็บของคนละชนิด)
+            // -> ข้ามไป output ถัดไป ถ้ายัดไปของจะตกพื้นหรือกล่องที่ทำงานถูกต้องจะโดนขึ้นบัญชีดำ
+            if (!containers.acceptsType(dest, inv, job.proto)) {
+                return;
+            }
+            // ให้ปลั๊กอินป้องกันพื้นที่/บันทึกประวัติได้เห็นและยับยั้งได้ ก่อนที่ของจะขยับจริง
+            if (!allowedByListeners(net, job, inv)) {
+                return;
+            }
+            before = containers.trueCount(dest, inv, job.proto);
+        } catch (RuntimeException ex) {
+            // ยังไม่ได้แตะปลายทางเลย -> ของยังอยู่ในมือครบ เฟสคืนของจะส่งกลับต้นทาง
+            LOG.log(Level.WARNING, lang.msg("transfer.insert-failed"), ex);
+            return;
+        }
+
+        int sent = job.remaining;
+        int inserted;
+        try {
             ItemStack toAdd = job.proto.clone();
-            toAdd.setAmount(job.remaining);
-            Map<Integer, ItemStack> leftover = inv.addItem(toAdd);
+            toAdd.setAmount(sent);
             int left = 0;
-            for (ItemStack s : leftover.values()) {
+            for (ItemStack s : inv.addItem(toAdd).values()) {
                 left += s.getAmount();
             }
-            int inserted = job.remaining - left;
+            inserted = sent - left;
             job.remaining = left;
-            if (inserted > 0) {
-                // มีของเข้าปลายทางจริง -> เอฟเฟกต์ที่ปลายทาง (เราอยู่บน region ปลายทางอยู่แล้ว)
-                playEffect(dest);
-            }
         } catch (RuntimeException ex) {
-            // อย่าให้ของหาย: คง job.remaining ไว้เท่าเดิม เพื่อให้เฟสคืนของส่งกลับต้นทาง
+            // addItem พังกลางคัน: อาจใส่ลงไปได้บางส่วนแล้ว จึงต้อง "วัดของจริง" เอา
+            // ถ้าเดามั่ว ๆ ว่าไม่เข้าเลยแล้วคืนต้นทางทั้งก้อน จะกลายเป็น dupe เท่าที่เข้าไปแล้ว
             LOG.log(Level.WARNING, lang.msg("transfer.insert-failed"), ex);
+            job.remaining = sent - gainOf(dest, inv, job.proto, before, sent);
+            return;
+        }
+
+        // --- ด่านฝั่งปลายทาง: กล่องต้องได้ของเพิ่มเท่าที่ addItem บอกว่ารับไป ---
+        // ไม่สมมาตรกับฝั่งต้นทางโดยตั้งใจ: ตรงนี้ของ "ออกจากมือเราไปแล้ว" ถ้าเดาว่ามันไม่ได้เก็บ
+        // แล้วดึงกลับไปคืนต้นทาง แต่จริง ๆ มันเก็บไว้ = dupe ทันที จึงได้แค่ตรวจจับ + ขึ้นบัญชีดำ
+        // ไม่พยายามกู้ของรอบนี้ ผลคือแย่ที่สุด = เสียหายรอบเดียวต่อกล่อง แล้วไม่แตะมันอีกเลย
+        int gained = gainOf(dest, inv, job.proto, before, sent);
+        if (gained != inserted && containers.distrust(dest)) {
+            LOG.warning(lang.msg("transfer.dest-not-conserved",
+                    "loc", describe(dest),
+                    "inv", inv.getClass().getSimpleName(),
+                    "sent", String.valueOf(inserted),
+                    "gained", String.valueOf(gained)));
+        }
+
+        if (inserted > 0) {
+            // มีของเข้าปลายทางจริง -> เอฟเฟกต์ที่ปลายทาง (เราอยู่บน region ปลายทางอยู่แล้ว)
+            playEffect(dest);
+        }
+    }
+
+    /**
+     * ยิง {@link InventoryMoveItemEvent} ให้ปลั๊กอินอื่นตัดสินก่อนย้ายของจริง — false = ถูกยกเลิก
+     *
+     * <p>นี่คือทางเดียวที่ปลั๊กอินป้องกันพื้นที่ (WorldGuard / GriefPrevention / Towny / LWC)
+     * และปลั๊กอินบันทึกประวัติ (CoreProtect) จะ "เห็น" การขนของของท่อได้ ถ้าไม่ยิง ผู้เล่นจะเอา
+     * sticky piston ไปจ่อกล่องในเขตของคนอื่นแล้วดูดของออกมาได้เลย โดยไม่มีอะไรขวางและไม่มีล็อก
+     * — ช่องโหว่แบบเดียวกับ hopper ลอดเข้าเขต ซึ่งเซิร์ฟทั่วไปกันไว้ผ่านอีเวนต์นี้อยู่แล้ว
+     *
+     * <p>ยิงหนึ่งครั้งต่อหนึ่ง output ด้วยจำนวนทั้งก้อน (ไม่ใช่ทีละชิ้น) — ปลั๊กอินป้องกันดูตำแหน่ง
+     * ต้นทาง/ปลายทางเป็นหลัก ไม่ได้ดูจำนวน จึงได้ผลเหมือนกันแต่ถูกกว่ามาก
+     *
+     * <p><b>Folia:</b> ยิงเฉพาะเมื่อกล่องต้นทางอยู่ใน region เดียวกับที่เรากำลังรันอยู่ เพราะ listener
+     * ของคนอื่นอาจไปอ่าน {@code event.getSource()} ซึ่งเป็น inventory ของอีก region = ผิดกฎเธรดของ
+     * Folia ท่อข้าม region จริง ๆ จึงข้ามการยิงอีเวนต์ไป (ระบุไว้ใน config.yml)
+     */
+    private boolean allowedByListeners(PipeNetwork net, TypeJob job, Inventory dest) {
+        Inventory source = job.sourceInventory;
+        if (!config.callInventoryMoveEvent() || source == null) {
+            return true;
+        }
+        if (!regions.ownsCurrentThread(net.sourceContainer())) {
+            return true;
+        }
+        try {
+            ItemStack moved = job.proto.clone();
+            moved.setAmount(job.remaining);
+            InventoryMoveItemEvent event = new InventoryMoveItemEvent(source, moved, dest, true);
+            Bukkit.getPluginManager().callEvent(event);
+            return !event.isCancelled();
+        } catch (Throwable t) {
+            // อีเวนต์พัง (listener ของคนอื่นโยน exception / API ต่างเวอร์ชัน) -> ปล่อยผ่าน
+            // ห้ามให้ของค้างในมือเพราะปลั๊กอินอื่นพัง
+            LOG.log(Level.WARNING, lang.msg("transfer.move-event-failed"), t);
+            return true;
+        }
+    }
+
+    /** ของชนิดนี้ในกล่องเพิ่มขึ้นจริงกี่ชิ้น (บีบให้อยู่ในช่วง 0..sent เผื่ออ่านค่าไม่ได้) */
+    private int gainOf(Location loc, Inventory inv, ItemStack proto, BigInteger before, int sent) {
+        try {
+            BigInteger gained = containers.trueCount(loc, inv, proto).subtract(before);
+            if (gained.signum() <= 0) {
+                return 0;
+            }
+            // storage unit เก็บได้เกิน int -> เทียบบน BigInteger ก่อนค่อยแปลง ไม่งั้น overflow
+            return gained.compareTo(BigInteger.valueOf(sent)) >= 0 ? sent : gained.intValue();
+        } catch (RuntimeException ex) {
+            return 0; // อ่านไม่ได้ -> ถือว่าไม่เข้าเลย แล้วคืนต้นทาง (ของไม่หาย)
         }
     }
 
     // --- เฟส 3: คืนของที่เหลือกลับต้นทาง ---
     private void returnLeftovers(PipeNetwork net, List<TypeJob> jobs) {
         try {
+            Inventory source = inventoryAt(net.sourceContainer());
+
+            // 1) คืนเข้า "ช่องเดิม" ที่ดูดออกมาก่อน — ถ้าปลายทางเต็มสนิท ผังกล่องต้นทางจะเหมือนเดิมเป๊ะ
+            //    (ไม่งั้น addItem จะยัดลงช่องแรกที่ว่าง = ของค่อย ๆ ถูกยุบมารวมช่องต้น ๆ ทุก pulse)
+            if (source != null) {
+                for (TypeJob job : jobs) {
+                    job.remaining = InventoryOps.restoreToOriginalSlots(
+                            source, job.proto, job.remaining, job.sourceSlots);
+                }
+            }
+
+            // 2) ส่วนที่คืนช่องเดิมไม่ได้ (ถูกยึดไประหว่างรอบ) -> ยัดที่ไหนก็ได้ในต้นทาง
             List<ItemStack> toReturn = new ArrayList<>();
             for (TypeJob job : jobs) {
                 while (job.remaining > 0) {
@@ -220,7 +368,6 @@ public final class ItemTransferService {
                 return;
             }
 
-            Inventory source = inventoryAt(net.sourceContainer());
             if (source != null) {
                 Map<Integer, ItemStack> still = source.addItem(toReturn.toArray(new ItemStack[0]));
                 if (!still.isEmpty()) {
@@ -234,36 +381,22 @@ public final class ItemTransferService {
         }
     }
 
-    private boolean alreadySeen(List<ItemStack> seen, ItemStack stack) {
+    private static String describe(Location loc) {
+        String world = loc.getWorld() == null ? "?" : loc.getWorld().getName();
+        return world + " " + loc.getBlockX() + "," + loc.getBlockY() + "," + loc.getBlockZ();
+    }
+
+    /**
+     * เคยลองชนิดนี้ไปแล้วในรอบนี้ไหม — เทียบเป๊ะเสมอ ({@code isSimilar}) ห้ามใช้โหมดของ filter
+     * เพราะชนิดที่ถูกจัดว่า "เหมือนกัน" จะถูกดูดรวมกันแล้วสร้างใหม่จาก proto ตัวเดียว (ดู {@link InventoryOps})
+     */
+    private static boolean alreadySeen(List<ItemStack> seen, ItemStack stack) {
         for (ItemStack s : seen) {
-            if (config.matchMode().matches(s, stack)) {
+            if (s.isSimilar(stack)) {
                 return true;
             }
         }
         return false;
-    }
-
-    private int removeUpTo(Inventory inv, ItemStack proto, int n) {
-        int removed = 0;
-        ItemStack[] contents = inv.getContents();
-        for (int i = 0; i < contents.length && removed < n; i++) {
-            ItemStack s = contents[i];
-            if (s == null || s.getType() == Material.AIR || s.getAmount() <= 0) {
-                continue;
-            }
-            if (!config.matchMode().matches(proto, s)) {
-                continue;
-            }
-            int take = Math.min(s.getAmount(), n - removed);
-            removed += take;
-            if (take >= s.getAmount()) {
-                inv.setItem(i, null);
-            } else {
-                s.setAmount(s.getAmount() - take);
-                inv.setItem(i, s);
-            }
-        }
-        return removed;
     }
 
     /**
@@ -301,11 +434,6 @@ public final class ItemTransferService {
     }
 
     private Inventory inventoryAt(Location loc) {
-        Block block = loc.getBlock();
-        BlockState state = block.getState();
-        if (state instanceof Container container && config.isContainerAllowed(block.getType())) {
-            return container.getInventory();
-        }
-        return null;
+        return containers.inventoryAt(loc);
     }
 }

@@ -37,9 +37,9 @@ public final class PipeLang {
         this.lang = loaded;
     }
 
-    /** Message for {@code key}; returns the key itself if it is missing. */
+    /** Message for {@code key}; returns the key itself only if even the bundled file lacks it. */
     public String msg(String key) {
-        return lang.getString(key, key);
+        return lookup(key);
     }
 
     /**
@@ -47,10 +47,24 @@ public final class PipeLang {
      * Pass alternating name/value pairs, e.g. {@code msg("plugin-enabled", "platform", "Folia")}.
      */
     public String msg(String key, String... placeholders) {
-        String s = lang.getString(key, key);
+        String s = lookup(key);
         for (int i = 0; i + 1 < placeholders.length; i += 2) {
             s = s.replace("{" + placeholders[i] + "}", placeholders[i + 1]);
         }
         return s;
+    }
+
+    /**
+     * Text for {@code key}, falling back to the jar's bundled lang.yml, then to the key itself.
+     *
+     * <p>Deliberately not {@code getString(key, key)}: passing an explicit default makes Bukkit
+     * read only the admin's own file and skip {@link FileConfiguration#setDefaults} entirely,
+     * so every key added in a later version printed as a raw key like
+     * {@code config.allowed-containers} on any server whose lang.yml predates it.
+     * The single-argument getter is the one that consults the defaults.
+     */
+    private String lookup(String key) {
+        String text = lang.getString(key);
+        return text != null ? text : key;
     }
 }

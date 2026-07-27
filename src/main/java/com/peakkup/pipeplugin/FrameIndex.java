@@ -1,6 +1,5 @@
 package com.peakkup.pipeplugin;
 
-import com.tcoded.folialib.FoliaLib;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -12,8 +11,6 @@ import org.bukkit.inventory.ItemStack;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -51,6 +48,11 @@ public final class FrameIndex {
         return new FrameIndex(new HashMap<>());
     }
 
+    /** สร้าง index จาก gate map ตรง ๆ (block location -> ไอเทมของ frame บนบล็อกนั้น) — เทสต์เท่านั้น */
+    static FrameIndex forTesting(Map<Location, List<ItemStack>> gatesByBlock) {
+        return new FrameIndex(gatesByBlock);
+    }
+
     /**
      * สแกน item frame ของทั้งท่อแบบ region-safe แล้วคืน {@link FrameIndex}
      *
@@ -59,41 +61,25 @@ public final class FrameIndex {
      * แล้ว schedule สแกนทีละ chunk บน region ของมัน ต่อกันด้วย CompletableFuture (ลำดับ = ปลอด race)
      * ความผิดพลาดของ chunk ใด chunk หนึ่งถูกกลืน (log) และถือว่า chunk นั้นไม่มี gate (fail-open)
      */
-    public static CompletableFuture<FrameIndex> buildAsync(FoliaLib foliaLib, PipeNetwork net, PipeLang lang) {
+    public static CompletableFuture<FrameIndex> buildAsync(RegionExecutor regions, PipeNetwork net, PipeLang lang) {
         Map<Location, List<ItemStack>> gates = new HashMap<>();
         World world = net.inputPiston().getWorld();
         if (world == null) {
             return CompletableFuture.completedFuture(new FrameIndex(gates));
         }
 
-        // บล็อกที่รับ gate ได้ = input piston + กระจกทุกก้อน + output piston ทุกตัว
-        Set<Location> gateBlocks = new HashSet<>(net.pipeBlocks());
-        gateBlocks.add(net.inputPiston());
-        for (PipeOutput out : net.outputs()) {
-            gateBlocks.add(out.piston());
-        }
-
-        // chunk ที่ต้องสแกน = chunk ของ gate block เอง + chunk ของเพื่อนบ้านแนวนอน 4 ทิศ
-        // (frame อยู่ในบล็อกอากาศติดกัน; แนวดิ่งอยู่ chunk คอลัมน์เดียวกันจึงไม่ต้องเพิ่ม)
-        Map<Long, int[]> chunks = new LinkedHashMap<>();
-        for (Location b : gateBlocks) {
-            int bx = b.getBlockX();
-            int bz = b.getBlockZ();
-            addChunk(chunks, bx, bz);
-            addChunk(chunks, bx - 1, bz);
-            addChunk(chunks, bx + 1, bz);
-            addChunk(chunks, bx, bz - 1);
-            addChunk(chunks, bx, bz + 1);
-        }
+        // รายการ gate block และ chunk ที่ต้องสแกนขึ้นกับโทโพโลยีล้วน ๆ -> ให้ PipeNetwork จำไว้
+        // ท่อที่โทโพโลยีไม่เปลี่ยนจึงไม่ต้องประกอบเซ็ตพวกนี้ใหม่ทุก pulse
+        Set<Location> gateBlocks = net.gateBlocks();
         int y0 = net.inputPiston().getBlockY();
 
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
-        for (int[] c : chunks.values()) {
+        for (int[] c : net.frameChunks()) {
             final int cx = c[0];
             final int cz = c[1];
             Location at = new Location(world, (cx << 4) + 8, y0, (cz << 4) + 8);
-            chain = chain.thenCompose(v -> foliaLib.getScheduler()
-                    .runAtLocation(at, t -> scanChunk(world, cx, cz, gateBlocks, gates))
+            chain = chain.thenCompose(v -> regions
+                    .at(at, () -> scanChunk(world, cx, cz, gateBlocks, gates))
                     .exceptionally(e -> {
                         // อ่าน frame ใน chunk นี้ไม่ได้ -> ข้าม (ของไม่หาย, แค่ filter chunk นี้ถูกละไว้)
                         LOG.log(Level.WARNING, lang.msg("transfer.frame-scan-failed"), e);
@@ -101,12 +87,6 @@ public final class FrameIndex {
                     }));
         }
         return chain.thenApply(v -> new FrameIndex(gates));
-    }
-
-    private static void addChunk(Map<Long, int[]> chunks, int blockX, int blockZ) {
-        int cx = blockX >> 4;
-        int cz = blockZ >> 4;
-        chunks.putIfAbsent(((long) cx << 32) ^ (cz & 0xffffffffL), new int[]{cx, cz});
     }
 
     /** สแกนทุก item frame ใน chunk (cx,cz) แล้ว map เข้า gate block ที่มันเกาะ (ต้องรันบน region ของ chunk นี้) */
