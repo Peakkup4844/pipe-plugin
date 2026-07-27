@@ -4,6 +4,8 @@ A *Create*-style item pipe system for Minecraft servers.
 
 Move items between storage blocks by building a pipe out of stained glass and pulsing redstone — no GUI, no commands, just build and power it.
 
+> **Maintenance:** this is a side project maintained in my spare time, so updates and issue responses may be slow or infrequent. Bug reports and pull requests are still welcome — please open an [issue](../../issues) with server software/version, config, and steps to reproduce — I just can't promise a quick turnaround.
+
 ---
 
 ## Compatibility
