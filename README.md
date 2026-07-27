@@ -197,4 +197,4 @@ Each pulse moves a single item type; that type is routed as follows:
 
 ## License
 
-You may use and modify this freely for your server.
+GPL-3.0. You're free to use, modify and redistribute this for your server; if you distribute a modified version (including running it as a public network service where that's regulated in your jurisdiction), it must stay open source under the same license. See [LICENSE](LICENSE).
