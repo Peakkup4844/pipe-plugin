@@ -168,8 +168,7 @@ public class ExternalStorageGuard {
 
     /** true = กล่องนี้เป็น storage unit ที่เราถามจำนวนจริงได้ */
     private boolean measurable(Object chest) {
-        return storageChestType != null && storageChestItem != null && storageChestAmount != null
-                && storageChestType.isInstance(chest);
+        return storageUnitsReadable() && storageChestType.isInstance(chest);
     }
 
     /**
@@ -334,12 +333,23 @@ public class ExternalStorageGuard {
         resolveStorageChest(loader);
 
         wildChests = found.isEmpty() ? null : found.toArray(new Lookup[0]);
-        if (wildChests != null) {
+        // บรรทัดนี้คือหน้าต่างเดียวที่แอดมินมองเห็นว่า hook ติดแค่ไหน จึงต้อง "บอกสิ่งที่ทำได้จริง"
+        // ไม่ใช่สิ่งที่ตั้งใจจะทำ — การหา chest lookup เจอ กับการอ่านจำนวนจริงของ storage unit ได้
+        // เป็นคนละเรื่องกัน (คนละคลาส คนละ resolve) ถ้าอันหลังพลาด storage unit จะถูก "ข้าม"
+        // เหมือนกล่องอื่นของ WildChests ซึ่งปลอดภัยแต่ไม่ใช่สิ่งที่ข้อความเดิมบอก
+        if (wildChests == null) {
+            log.warning(lang.msg("external-storage.hook-failed", "plugin", "WildChests"));
+        } else if (storageUnitsReadable()) {
             log.info(lang.msg("external-storage.hooked", "plugin", "WildChests"));
         } else {
-            log.warning(lang.msg("external-storage.hook-failed", "plugin", "WildChests"));
+            log.warning(lang.msg("external-storage.hooked-no-storage-units", "plugin", "WildChests"));
         }
         return wildChests;
+    }
+
+    /** true = resolve ทางอ่าน "จำนวนจริง" ของ storage unit ได้ครบ (ดู {@link #resolveStorageChest}) */
+    private boolean storageUnitsReadable() {
+        return storageChestType != null && storageChestItem != null && storageChestAmount != null;
     }
 
     /**
