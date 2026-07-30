@@ -31,3 +31,5 @@ plugins/
 # OS
 .DS_Store
 Thumbs.db
+
+skill.md
