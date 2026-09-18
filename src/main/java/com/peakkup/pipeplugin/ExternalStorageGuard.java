@@ -265,8 +265,13 @@ public class ExternalStorageGuard {
      */
     private Lookup[] hooks() {
         Lookup[] hooks = wildChests;
-        if (hooks != null || resolveAttempted || plugin == null) {
+        if (hooks != null || plugin == null) {
             return hooks;
+        }
+        if (resolveAttempted) {
+            // อ่าน wildChests ซ้ำหลังเห็นธง: ค่าที่อ่านไว้ข้างบนอาจเป็น null ของก่อน resolve เสร็จ
+            // (อีก region กำลัง resolve อยู่พอดี) ถ้าคืนตัวนั้นไป กล่อง WildChests จะถูกมองเป็นกล่องธรรมดา
+            return wildChests;
         }
         if (plugin.getServer().getPluginManager().getPlugin("WildChests") == null) {
             return null;
@@ -297,7 +302,6 @@ public class ExternalStorageGuard {
         if (wildChestsPlugin == null) {
             return null; // ยังไม่โหลด -> ลองใหม่ตอนใช้งานจริง
         }
-        resolveAttempted = true;
 
         ClassLoader loader = wildChestsPlugin.getClass().getClassLoader();
         List<Lookup> found = new ArrayList<>();
@@ -333,6 +337,8 @@ public class ExternalStorageGuard {
         resolveStorageChest(loader);
 
         wildChests = found.isEmpty() ? null : found.toArray(new Lookup[0]);
+        // ตั้งธง "หลัง" publish ผลเสมอ: hooks() ไม่ถือล็อก ถ้าเห็นธงก่อนเห็นผล จะได้ null แล้วมองข้าม WildChests
+        resolveAttempted = true;
         // บรรทัดนี้คือหน้าต่างเดียวที่แอดมินมองเห็นว่า hook ติดแค่ไหน จึงต้อง "บอกสิ่งที่ทำได้จริง"
         // ไม่ใช่สิ่งที่ตั้งใจจะทำ — การหา chest lookup เจอ กับการอ่านจำนวนจริงของ storage unit ได้
         // เป็นคนละเรื่องกัน (คนละคลาส คนละ resolve) ถ้าอันหลังพลาด storage unit จะถูก "ข้าม"

@@ -253,10 +253,11 @@ public final class ItemTransferService {
         int sent = job.remaining;
         int inserted;
         try {
-            ItemStack toAdd = job.proto.clone();
-            toAdd.setAmount(sent);
+            // หั่นเป็นกองละไม่เกิน maxStackSize ของไอเทมก่อนยัด: addItem ของ CraftBukkit วางลงช่องว่าง
+            // โดยเทียบกับเพดานของ inventory (64) ไม่ใช่ของไอเทม ของ stack 16 (ender pearl, ไข่, ป้าย)
+            // ก้อนละ 32 จะกลายเป็นกองเกินขนาดในช่องเดียว หรือถูกตัดทิ้งเงียบ ๆ บนเวอร์ชันที่บีบขนาดตอน setItem
             int left = 0;
-            for (ItemStack s : inv.addItem(toAdd).values()) {
+            for (ItemStack s : inv.addItem(stacksOf(job.proto, sent)).values()) {
                 left += s.getAmount();
             }
             inserted = sent - left;
@@ -299,6 +300,12 @@ public final class ItemTransferService {
      * <p>ยิงหนึ่งครั้งต่อหนึ่ง output ด้วยจำนวนทั้งก้อน (ไม่ใช่ทีละชิ้น) — ปลั๊กอินป้องกันดูตำแหน่ง
      * ต้นทาง/ปลายทางเป็นหลัก ไม่ได้ดูจำนวน จึงได้ผลเหมือนกันแต่ถูกกว่ามาก
      *
+     * <p><b>initiator = ปลายทาง</b> ({@code isSourceInitiator = false}) แบบเดียวกับ hopper ที่ดูดของจาก
+     * กล่องข้างบน เพราะปลั๊กอินป้องกันตัดสินจาก initiator ว่าต้องตรวจฝั่งไหน: LWC ตรวจเฉพาะ
+     * destination เมื่อ initiator คือ source ("dropper ฝากของ") และ WorldGuard ข้ามการตรวจ source
+     * เมื่อ initiator เป็นกล่องเดียวกับ source — ถ้าส่ง true กล่องต้นทางในเขตคนอื่นจะไม่ถูกตรวจเลย
+     * ซึ่งคือช่องโหว่ "ดูดของออกจากเขต" ที่อีเวนต์นี้มีไว้ปิดตั้งแต่แรก
+     *
      * <p><b>Folia:</b> ยิงเฉพาะเมื่อกล่องต้นทางอยู่ใน region เดียวกับที่เรากำลังรันอยู่ เพราะ listener
      * ของคนอื่นอาจไปอ่าน {@code event.getSource()} ซึ่งเป็น inventory ของอีก region = ผิดกฎเธรดของ
      * Folia ท่อข้าม region จริง ๆ จึงข้ามการยิงอีเวนต์ไป (ระบุไว้ใน config.yml)
@@ -314,7 +321,7 @@ public final class ItemTransferService {
         try {
             ItemStack moved = job.proto.clone();
             moved.setAmount(job.remaining);
-            InventoryMoveItemEvent event = new InventoryMoveItemEvent(source, moved, dest, true);
+            InventoryMoveItemEvent event = new InventoryMoveItemEvent(source, moved, dest, false);
             Bukkit.getPluginManager().callEvent(event);
             return !event.isCancelled();
         } catch (Throwable t) {
@@ -356,12 +363,9 @@ public final class ItemTransferService {
             // 2) ส่วนที่คืนช่องเดิมไม่ได้ (ถูกยึดไประหว่างรอบ) -> ยัดที่ไหนก็ได้ในต้นทาง
             List<ItemStack> toReturn = new ArrayList<>();
             for (TypeJob job : jobs) {
-                while (job.remaining > 0) {
-                    int amt = Math.min(job.remaining, job.proto.getMaxStackSize());
-                    ItemStack s = job.proto.clone();
-                    s.setAmount(amt);
-                    toReturn.add(s);
-                    job.remaining -= amt;
+                if (job.remaining > 0) {
+                    Collections.addAll(toReturn, stacksOf(job.proto, job.remaining));
+                    job.remaining = 0;
                 }
             }
             if (toReturn.isEmpty()) {
@@ -379,6 +383,17 @@ public final class ItemTransferService {
         } catch (RuntimeException ex) {
             LOG.log(Level.WARNING, lang.msg("transfer.return-failed"), ex);
         }
+    }
+
+    /** ของชนิด proto จำนวน amount หั่นเป็นกองละไม่เกิน maxStackSize (ใช้ทั้งตอนยัดปลายทางและตอนคืนต้นทาง) */
+    private static ItemStack[] stacksOf(ItemStack proto, int amount) {
+        int maxStack = Math.max(1, proto.getMaxStackSize());
+        ItemStack[] stacks = new ItemStack[(amount + maxStack - 1) / maxStack];
+        for (int i = 0; i < stacks.length; i++) {
+            stacks[i] = proto.clone();
+            stacks[i].setAmount(Math.min(maxStack, amount - i * maxStack));
+        }
+        return stacks;
     }
 
     private static String describe(Location loc) {

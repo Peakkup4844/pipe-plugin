@@ -16,6 +16,7 @@ import org.bukkit.event.block.BlockRedstoneEvent;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -42,8 +43,13 @@ public final class RedstoneTriggerListener implements Listener {
         final AtomicBoolean queued = new AtomicBoolean();
         /** powered ครั้งล่าสุดที่ตรวจ — ใช้จับขอบขาขึ้น */
         volatile boolean powered;
-        /** เวลา (ms) ที่ท่อยิงรอบล่าสุด — ใช้บังคับ min-pulse-interval; 0 = ยังไม่เคยยิง */
+        /**
+         * เวลา ({@link System#nanoTime}) ที่ท่อยิงรอบล่าสุด — ใช้บังคับ min-pulse-interval
+         * ใช้นาฬิกา monotonic เพราะถ้าใช้เวลาจริงแล้วนาฬิกาเครื่องถูกตั้งถอยหลัง ท่อจะถูกบล็อกจนกว่าเวลาจะเดินทัน
+         */
         volatile long lastFire;
+        /** ยิงไปแล้วอย่างน้อยหนึ่งครั้ง (nanoTime เป็น 0/ติดลบได้ จึงใช้ 0 เป็นค่า "ยังไม่เคยยิง" ไม่ได้) */
+        volatile boolean fired;
     }
 
     private final Map<Location, PistonState> pistons = new ConcurrentHashMap<>();
@@ -126,11 +132,12 @@ public final class RedstoneTriggerListener implements Listener {
         // rate limit: กัน clock เร็ว ๆ ยิงรัว (นับต่อท่อ ต่อ input piston)
         long interval = config.minPulseIntervalMillis();
         if (interval > 0) {
-            long now = System.currentTimeMillis();
-            if (state.lastFire != 0 && now - state.lastFire < interval) {
+            long now = System.nanoTime();
+            if (state.fired && now - state.lastFire < TimeUnit.MILLISECONDS.toNanos(interval)) {
                 return;
             }
             state.lastFire = now;
+            state.fired = true;
         }
 
         // ขอบขาขึ้น -> ค้นท่อ "ใหม่ทุกรอบ" แล้วย้ายของ 1 รอบ

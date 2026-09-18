@@ -55,6 +55,18 @@ public final class RegionExecutor {
             }
             return CompletableFuture.completedFuture(null);
         }
-        return foliaLib.getScheduler().runAtLocation(loc, task -> body.run());
+        // ไม่คืน future ของ FoliaLib ตรง ๆ: มัน complete หลัง body จบปกติเท่านั้น ถ้า body โยน exception
+        // future นั้นจะค้างตลอดไป -> ทุกขั้นที่ต่อ chain ไว้ไม่เคยรัน, release() ไม่ถูกเรียก = ท่อ busy ถาวร
+        // (และของที่ดูดมาแล้วไม่ถูกคืน) จึงห่อเองให้ exception กลายเป็น future ที่ fail เหมือนทางรันทันที
+        CompletableFuture<Void> done = new CompletableFuture<>();
+        foliaLib.getScheduler().runAtLocation(loc, task -> {
+            try {
+                body.run();
+                done.complete(null);
+            } catch (Throwable t) {
+                done.completeExceptionally(t);
+            }
+        });
+        return done;
     }
 }
