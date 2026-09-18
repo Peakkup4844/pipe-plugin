@@ -66,7 +66,7 @@ Supported glass: clear `GLASS`, `TINTED_GLASS`, and all 16 `*_STAINED_GLASS` blo
 
 ## Installation
 
-1. Drop `PipePlugin-1.0.0.jar` into your server's `plugins/` folder.
+1. Drop `PipePlugin-1.0.1.jar` into your server's `plugins/` folder.
 2. Start the server. `plugins/PipePlugin/config.yml` and `lang.yml` are generated.
 
 ---
@@ -153,7 +153,7 @@ Requires a JDK 17+ on `PATH` (the included Gradle wrapper handles the rest).
 .\gradlew.bat shadowJar    # Windows
 ```
 
-Output: `build/libs/PipePlugin-1.0.0.jar`
+Output: `build/libs/PipePlugin-1.0.1.jar`
 
 ---
 
